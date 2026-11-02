@@ -1,4 +1,4 @@
-# Weekly retro: scripts/retro.py counts the week (cycle time, fix rounds, handovers); a read-only Claude
+# Weekly retro: scripts/retro.py counts the week (cycle time, fix rounds, handovers, Claude usage); a read-only Claude
 # reads the issues behind them and proposes at most 3 changes; the result is posted as a Discussion.
 # Subscribe the Slack channel to Discussions and the retro shows up there too.
 name: agentkit-retro
@@ -98,8 +98,18 @@ jobs:
           for n in $(jq -r '.[].number' "$RUNNER_TEMP/issues.json"); do
             gh api --paginate "repos/$REPO/issues/$n/events" | jq -sc --arg n "$n" '{($n): [.[][] | select(.event == "labeled") | {event, label, created_at}]}'
           done | jq -s 'add // {}' >"$RUNNER_TEMP/events.json"
+          # Claude usage: the agentkit-usage-* artifact each Claude run leaves (.github/actions/usage)
+          # ponytail: lists every artifact in the repo; query by name per job if that list gets long
+          export SINCE=$since
+          gh api --paginate "repos/$REPO/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | select((.name | startswith("agentkit-usage-")) and .created_at >= env.SINCE and (.expired | not)) | .id' \
+            | while read -r id; do
+                { gh api "repos/$REPO/actions/artifacts/$id/zip" </dev/null >"$RUNNER_TEMP/usage.zip" && unzip -p "$RUNNER_TEMP/usage.zip"; } \
+                  || echo "::warning::usage artifact $id unreadable; left out" >&2
+              done | jq -s . >"$RUNNER_TEMP/usage.json"
           jq -n --arg since "$since" --slurpfile i "$RUNNER_TEMP/issues.json" --slurpfile e "$RUNNER_TEMP/events.json" \
-            '{since: $since, issues: [$i[0][] | . + {events: ($e[0][.number | tostring] // [])}]}' \
+            --slurpfile u "$RUNNER_TEMP/usage.json" \
+            '{since: $since, issues: [$i[0][] | . + {events: ($e[0][.number | tostring] // [])}], usage: $u[0]}' \
             | python3 .agentkit-kit/scripts/retro.py >.agentkit-retro/metrics.md
           cat .agentkit-retro/metrics.md
 
@@ -122,12 +132,22 @@ jobs:
             The numbers are in .agentkit-retro/metrics.md; use them as they are. Read the issues behind the fix rounds
             and handovers (`gh issue view N --comments`, their PRs' review comments) and find what caused them.
             Answer with at most 3 proposed changes that would have prevented them: a CLAUDE.md line, a skill or
-            prompt edit, a label or workflow setting. For each: the change, the file, and the issues that show it.
+            prompt edit, a label or workflow setting (a job's model or max-turns too, when the usage numbers show
+            it). For each: the change, the file, and the issues or numbers that show it.
             If nothing needs changing, say so in one line. Your answer is posted as is. Do not edit files.
           claude_args: >-
             --model ${{ inputs.model }}
             --max-turns 40
             --allowedTools Bash(gh:*),Bash(rg:*),Read,Glob,Grep
+
+      - name: Usage
+        if: always() && steps.claude.outputs.execution_file != ''
+        continue-on-error: true  # usage logging never fails a run
+        uses: ./.agentkit-kit/.github/actions/usage
+        with:
+          execution-file: ${{ steps.claude.outputs.execution_file }}
+          job: retro
+          model: ${{ inputs.model }}
 
       - name: Post the retro
         env:

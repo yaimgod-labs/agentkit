@@ -15,7 +15,8 @@ description: Review a pull request for correctness against its linked issue's ac
    - scope: changes unrelated to the issue;
    - for a `type:rfc` issue (see the issue's labels): the RFC has at least two real options with for and against, a recommendation that follows from them, consequences, and rejected options with reasons; it stays `status: proposed` unless the PR has a `/decide` comment (in `pr.md` under `Decision comment`), and then its status, and the decision record linking it, match that comment, contains no implementation, and does not contradict an accepted decision without proposing to supersede it.
 3. Leave an inline comment on the exact line for each finding (in CI use the inline comment tool). One finding per comment: problem, then fix.
-4. Verdict:
-   - `fail` if any acceptance criterion is unmet, or there is a correctness bug, a CLAUDE.md rule violation, a contradicted decision, a doc the change made wrong, or an RFC missing what step 2 asks of it.
+4. Fix round (CI gives `.agentkit-review/previous.md`, the findings that sent earlier rounds back, and usually `.agentkit-review/since-last-round.patch`, what changed since; without it, treat all code as changed): check each earlier blocking finding first; one not fixed is still blocking. Code outside `since-last-round.patch` was judged last round: a new finding there blocks only if an acceptance criterion is unmet, otherwise comment it as `(not blocking: judged last round)`. Changed code gets the full check of step 2.
+5. Verdict:
+   - `fail` if any acceptance criterion is unmet, or there is a blocking correctness bug, CLAUDE.md rule violation, contradicted decision, doc the change made wrong, or an RFC missing what step 2 asks of it.
    - `pass` otherwise. Style nits and suggestions never fail a review.
-5. Return the verdict and a short summary listing the blocking findings.
+6. Return the verdict and a short summary listing the blocking findings.

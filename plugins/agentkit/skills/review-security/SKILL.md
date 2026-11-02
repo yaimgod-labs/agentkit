@@ -17,4 +17,5 @@ description: Security review of a pull request diff — injection, authn/authz, 
    - an RFC (`docs/rfcs/`) whose design touches auth, data, secrets or the network but has no threat model, or whose recommended option has a concrete exploit path it does not address.
 3. Report only findings with a concrete exploit path. No theoretical hardening advice, no style.
 4. Leave an inline comment per finding: severity (high, medium, low), exploit path, fix.
-5. Verdict: `fail` for any high or medium finding, `pass` otherwise.
+5. Fix round (CI gives `.agentkit-review/previous.md`, the findings that sent earlier rounds back, and usually `.agentkit-review/since-last-round.patch`, what changed since; without it, treat all code as changed): check each earlier high or medium finding first; one not fixed still fails. Code outside `since-last-round.patch` was judged last round: a new finding there fails the review only if it is high, otherwise comment it as `(not blocking: judged last round)`.
+6. Verdict: `fail` for any high or medium finding (within step 5's limits), `pass` otherwise.

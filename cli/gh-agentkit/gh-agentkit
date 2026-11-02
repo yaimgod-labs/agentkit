@@ -32,6 +32,7 @@ LABELS=(
   "reason:flaky|e99695|Handed over: flaky tests or CI"
   "reason:too-big|e99695|Handed over: too big for one PR"
   "reason:agent-error|e99695|Handed over: the agent failed or timed out"
+  "reason:retry|e99695|Not a handover: the implement run failed once and was retried automatically"
   "reason:manual-check|e99695|Handed over: needs a check only a person can do (hardware, a real account, …)"
   "type:feature|a2eeef|New capability"
   "type:bug|d73a4a|Something is broken"

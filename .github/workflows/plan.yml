@@ -77,7 +77,8 @@ jobs:
           bot: ${{ steps.app.outputs.app-slug }}[bot]
           require-all: "true"
 
-      - uses: anthropics/claude-code-action@v1
+      - id: claude
+        uses: anthropics/claude-code-action@v1
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         with:
@@ -96,3 +97,12 @@ jobs:
             --model ${{ inputs.model }}
             --max-turns 60
             --allowedTools Bash(gh:*),Read,Glob,Grep,Skill
+
+      - name: Usage
+        if: always() && steps.claude.outputs.execution_file != ''
+        continue-on-error: true  # usage logging never fails a run
+        uses: ./.agentkit-kit/.github/actions/usage
+        with:
+          execution-file: ${{ steps.claude.outputs.execution_file }}
+          job: plan
+          model: ${{ inputs.model }}

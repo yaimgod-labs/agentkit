@@ -110,6 +110,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE: ${{ github.event.pull_request.base.ref }}
         run: |
           mkdir -p .agentkit-review
@@ -126,6 +127,18 @@ jobs:
           else echo "No linked issue." >.agentkit-review/issue.md; fi
           [ -s .agentkit-review/issue.md ] || { echo "::error::linked issue export is empty"; exit 1; }
           git diff "origin/$BASE...HEAD" >.agentkit-review/diff.patch
+          # a fix round: the findings that sent earlier rounds back, and what changed since the last round's
+          # commit (named in its marker), so the reviewer checks those fixes instead of re-judging settled code
+          prev=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq '.[] | select(.body | test("^<!-- agentkit:(round|review-)")) | "\n## \(.created_at)\n\n\(.body)\n"')
+          if [ -n "$prev" ]; then
+            printf '%s\n' "$prev" >.agentkit-review/previous.md
+            last=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[].body' \
+              | sed -nE 's/^<!-- agentkit:round ([0-9a-f]{40}) -->.*/\1/p' | tail -n1)
+            if [ -n "$last" ] && git cat-file -e "$last^{commit}" 2>/dev/null; then
+              git diff "$last" "$HEAD_SHA" >.agentkit-review/since-last-round.patch
+            fi
+          fi
           wc -c .agentkit-review/*
 
       - id: claude
@@ -145,7 +158,8 @@ jobs:
             Repository ${{ github.repository }}, pull request #${{ github.event.pull_request.number }},
             base branch origin/${{ github.event.pull_request.base.ref }}.
             Your inputs: .agentkit-review/pr.md (PR description), .agentkit-review/issue.md (linked issue with its
-            acceptance criteria and comments), .agentkit-review/diff.patch (the diff). Read all three first.
+            acceptance criteria and comments), .agentkit-review/diff.patch (the diff). Read all three first, and in a
+            fix round also .agentkit-review/previous.md and .agentkit-review/since-last-round.patch if they exist.
             Use the agentkit:review-${{ matrix.kind }} skill. You are read-only: never edit files, commit or push.
             Post findings as inline comments on the PR, then return the verdict.
           claude_args: >-
@@ -153,6 +167,15 @@ jobs:
             --max-turns ${{ inputs.max-turns }}
             --allowedTools Bash(git:*),Read,Glob,Grep,Skill,mcp__github_inline_comment__create_inline_comment
             --json-schema '{"type":"object","required":["verdict","summary"],"properties":{"verdict":{"enum":["pass","fail"]},"summary":{"type":"string"}}}'
+
+      - name: Usage
+        if: always() && steps.claude.outputs.execution_file != ''
+        continue-on-error: true  # usage logging never fails a run
+        uses: ./.agentkit-kit/.github/actions/usage
+        with:
+          execution-file: ${{ steps.claude.outputs.execution_file }}
+          job: review-${{ matrix.kind }}
+          model: ${{ inputs.model }}
 
       - name: Verdict
         env:
@@ -445,16 +468,16 @@ jobs:
                 return 0 ;;
             esac
             local rounds
-            rounds=$(gh api --paginate "repos/$REPO/issues/$pr/comments" --jq '[.[]|select(.body|contains("<!-- agentkit:round -->"))]|length' | awk '{s+=$1} END {print s+0}')
+            rounds=$(gh api --paginate "repos/$REPO/issues/$pr/comments" --jq '[.[]|select(.body|contains("<!-- agentkit:round"))]|length' | awk '{s+=$1} END {print s+0}')
             rounds=$((rounds + 1))
             if [ "$rounds" -ge "$MAX_ROUNDS" ]; then
-              gh pr comment "$pr" --repo "$REPO" --body "<!-- agentkit:round -->
+              gh pr comment "$pr" --repo "$REPO" --body "<!-- agentkit:round $sha -->
           agentkit: review round $rounds of $MAX_ROUNDS failed ($RUN). Stopping the fix loop — needs a human.
 
           $failed"
               set_status status:needs-human reason:agent-error
             else
-              gh pr comment "$pr" --repo "$REPO" --body "<!-- agentkit:round -->
+              gh pr comment "$pr" --repo "$REPO" --body "<!-- agentkit:round $sha -->
           agentkit: review round $rounds of $MAX_ROUNDS failed ($RUN). Sending back to the implementer.
 
           $failed"
