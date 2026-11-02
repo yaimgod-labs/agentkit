@@ -27,6 +27,8 @@ on:
     secrets:
       AGENTKIT_APP_KEY:
         required: true
+      SLACK_WEBHOOK_URL:
+        required: false
 
 permissions: {}
 
@@ -140,6 +142,30 @@ jobs:
           [ -n "$n" ] || exit 0
           gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx type:rfc || { echo "#$n is not an RFC"; exit 0; }
           .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:changes-requested
+
+      # a dependency that was dropped (closed, not completed) can never unblock its dependents
+      - name: Block dependents of a dropped issue
+        if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason != 'completed'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          N: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+          SLACK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          affected=$(.agentkit-kit/scripts/drop-dependency.sh "$REPO" "$N" "$TITLE")
+          [ -n "$affected" ] || { echo "#$N blocks no open issue"; exit 0; }
+          list=""
+          for d in $affected; do
+            t=$(gh issue view "$d" --repo "$REPO" --json title --jq .title)
+            list+="${list:+, }#$d $t"
+          done
+          echo "blocked: $list"
+          if [ -n "$SLACK" ]; then
+            text="Dropped #$N $TITLE. Blocked: $list"
+            jq -n --arg t "$text" '{text: ($t | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;"))}' \
+              | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$SLACK" >/dev/null || echo "::warning::could not post to Slack"
+          fi
 
       - name: List ready issues
         id: ready
