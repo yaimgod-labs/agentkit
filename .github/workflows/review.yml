@@ -191,7 +191,6 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       suites: ${{ steps.pick.outputs.suites }}
     steps:
@@ -201,6 +200,7 @@ jobs:
           client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
           private-key: ${{ secrets.AGENTKIT_APP_KEY }}
           permission-actions: read
+          permission-pull-requests: read
 
       - name: Load agentkit
         env:
@@ -217,7 +217,7 @@ jobs:
 
       - id: pick
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           SUITES: ${{ inputs.suites }}
