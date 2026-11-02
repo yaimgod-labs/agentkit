@@ -13,4 +13,5 @@ tests/test_upgrade.sh
 python3 tests/test_marketplace.py
 python3 tests/test_docs.py
 python3 tests/test_caller.py
-python3 -m py_compile plugins/agentkit/scripts/guard.py plugins/agentkit/scripts/docs.py cli/gh-agentkit/caller.py
+python3 tests/test_checks.py
+python3 -m py_compile plugins/agentkit/scripts/guard.py plugins/agentkit/scripts/docs.py cli/gh-agentkit/caller.py scripts/checks.py

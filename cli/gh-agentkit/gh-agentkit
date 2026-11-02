@@ -336,9 +336,16 @@ cmd_doctor() {
   fi
 
   if [ -s "$CONF/app.pem" ] && [ -s "$CONF/client-id" ]; then
-    curl -fsS -H "Authorization: Bearer $(app_jwt)" -H "Accept: application/vnd.github+json" \
-      "https://api.github.com/repos/$repo/installation" >/dev/null 2>&1 \
-      && ok "App installed on $repo" || bad "App not installed on $repo"
+    local inst
+    if inst=$(curl -fsS -H "Authorization: Bearer $(app_jwt)" -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/repos/$repo/installation" 2>/dev/null); then
+      ok "App installed on $repo"
+      jq -e '.permissions.statuses' <<<"$inst" >/dev/null \
+        && ok "App can read commit statuses" \
+        || warn "App cannot read commit statuses: the gate ignores them (App settings → Permissions → Commit statuses: Read, then accept on the installation)"
+    else
+      bad "App not installed on $repo"
+    fi
   else
     warn "no local App key — skipped the App installation check"
   fi

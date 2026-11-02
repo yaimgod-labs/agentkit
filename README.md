@@ -16,8 +16,8 @@ backlog ──(you)──▶ refining ──refine──▶ ready ──dispatch
 | refine | `status:refining`, or your comment on a `status:needs-info` issue | Claude (read-only) posts a plan, criteria and questions; the workflow sets `size:*`, `type:*`, `mode:*` and moves the issue to `ready` (size xs/s, nothing unclear) or `needs-info` (assigned to you) |
 | dispatch | every 30 min, any `status:*` label, PR merged or edited | promotes the top unblocked `ready` issue (priority, then oldest; skips `mode:human`, `size:m`, `size:l`) while in-flight < WIP (default 2); mirrors labels to the board's **Stage** field; approves a `needs-device-check` PR once its Human verification boxes are all ticked |
 | implement | `status:in-progress` or `status:changes-requested` | Claude (implementer) commits on `agent/<n>-<slug>`; the workflow pushes, opens the PR (`Closes #n`), sets `status:review` |
-| review | PR opened / pushed / ready for review | three checks in parallel: `review (code)`, `review (security)` — fresh Claude sessions, read-only — and `integration` (`.agentkit/test.sh`) |
-| gate | after the checks | all green → `status:approved` (auto-merge only if repo var `AUTO_MERGE=true`), or `status:needs-device-check` while the PR has unticked items under `## Human verification`; otherwise back to the implementer, max 3 rounds |
+| review | PR opened / pushed / ready for review | in parallel: `review (code)`, `review (security)` — fresh Claude sessions, read-only — `docs`, and `integration` (`.agentkit/test.sh`, or each changed `suite`) |
+| gate | after the checks; again on other CI apps' results and every 30 min | every check run and commit status on the PR's head commit counts, other CI included; all green → `status:approved` (auto-merge only if repo var `AUTO_MERGE=true`), or `status:needs-device-check` while the PR has unticked items under `## Human verification`; otherwise back to the implementer, max 3 rounds |
 | plan | `/plan` comment on an issue | the issue becomes an epic with sub-issues, all `status:backlog` |
 | decide | `/decide accept <why>` or `/decide reject <why>` on an RFC's PR, by someone with write access | the issue goes back to the implementer, which sets the RFC's status and writes the decision record; the review checks both against your comment |
 
@@ -59,6 +59,22 @@ Release flow:
 3. Only after a pass: tag `v1.x.y` and move `v1` to it. Projects pick it up on their next run.
 
 When a release adds labels, caller jobs or board stages, run `gh agentkit upgrade <owner/repo>` for each project: it adds the labels and the missing **Stage** options (cards keep their stage), and opens one PR that syncs the caller with the template, keeping the project's `with:` settings, `@ref` pins and extra jobs. `gh agentkit doctor` warns about missing stages.
+
+## Monorepos and other CI
+
+By default one `integration` job runs `.agentkit/test.sh`. A repo whose parts need different machines sets `suites` on the caller's `review` job; only suites with a changed path run, each on its own `runs-on`:
+
+```yaml
+    with:
+      suites: >-
+        [{"name": "api", "paths": ["api/**"], "runs-on": "ubuntu-latest", "run": "cd api && npm ci && npm test"},
+         {"name": "cli", "paths": ["cli/**"], "runs-on": "macos-latest", "run": "cd cli && make test"}]
+      external-checks: >-
+        [{"name": "mobile-ci", "paths": ["mobile/**"]}]
+      check-timeout: 60
+```
+
+Tests that run elsewhere (a hosted mobile CI, Jenkins, …) report back as check runs or commit statuses; name them in `external-checks` and the gate waits for them when their paths changed. The gate judges every check on the PR's head commit, so a failure anywhere sends the PR back, with each failed check's summary in the round comment the implementer reads. A check still pending or missing `check-timeout` minutes after the push moves the issue to `status:needs-human` + `reason:env`. Late results re-run the gate (`check_run` and `status` triggers, plus the 30-minute schedule). Reading commit statuses needs the App's **Commit statuses: read** permission (`doctor` warns when it is missing); without it the gate sees check runs only. Globs are fnmatch: `*` also matches `/`.
 
 ## Docs
 

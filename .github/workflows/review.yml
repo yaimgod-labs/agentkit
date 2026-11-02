@@ -1,6 +1,9 @@
 # Reviews: code + security (Claude, separate fresh-context jobs, read-only repo
-# access) and integration (the project's own test script), then a gate that
-# moves the linked issue to status:approved or back to the implementer.
+# access), integration (the project's test script, or the `suites` whose paths
+# changed) and docs, then a gate that judges every check on the PR's head commit,
+# external ones included, and moves the linked issue to status:approved, back to
+# the implementer, or to a human. The gate alone also runs on check_run, status,
+# schedule and workflow_dispatch events, to pick up results that arrive later.
 name: agentkit-review
 
 on:
@@ -25,6 +28,22 @@ on:
         description: Failed review rounds before the issue goes to status:needs-human
         type: number
         default: 3
+      suites:
+        description: >-
+          JSON list of test suites, each {"name", "paths": [globs], "runs-on", "run"}; only suites with a changed
+          path run (no `paths` = always). Empty = one `integration` job running .agentkit/test.sh
+        type: string
+        default: ""
+      external-checks:
+        description: >-
+          JSON list of checks other apps post on the commit (check runs or commit statuses), each {"name", "paths"};
+          the gate waits for those whose paths changed
+        type: string
+        default: ""
+      check-timeout:
+        description: Minutes after the head commit a check may stay pending or missing before the issue goes to a human
+        type: number
+        default: 60
     secrets:
       AGENTKIT_APP_KEY:
         required: true
@@ -145,7 +164,7 @@ jobs:
           [ "$verdict" = "pass" ]
 
   integration:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository && inputs.suites == ''
     runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
     concurrency:
@@ -164,6 +183,72 @@ jobs:
             exit 0
           fi
           .agentkit/test.sh
+
+  # suites: only those whose paths the PR changes
+  changes:
+    if: github.event.pull_request.head.repo.full_name == github.repository && inputs.suites != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      suites: ${{ steps.pick.outputs.suites }}
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-actions: read
+
+      - name: Load agentkit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: review.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SUITES: ${{ inputs.suites }}
+        run: |
+          picked=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' | python3 .agentkit-kit/scripts/checks.py select "$SUITES")
+          echo "suites: $(jq -r '[.[].name] | join(", ")' <<<"$picked")"
+          echo "suites=$picked" >>"$GITHUB_OUTPUT"
+
+  suite:
+    needs: changes
+    if: needs.changes.outputs.suites != '[]' && needs.changes.outputs.suites != ''
+    name: integration (${{ matrix.suite.name }})
+    runs-on: ${{ matrix.suite.runs-on || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.changes.outputs.suites) }}
+    concurrency:
+      group: agentkit-suite-${{ github.repository }}-${{ github.event.pull_request.number }}-${{ matrix.suite.name }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Run suite
+        env:
+          RUN: ${{ matrix.suite.run }}
+        run: bash -c "$RUN"
 
   # docs/ consistency: schema, links, index, and docs whose `covers` code changed (see scripts/docs.py)
   docs:
@@ -235,13 +320,16 @@ jobs:
           exit "$rc"
 
   gate:
-    needs: [review, integration, docs]
-    if: always() && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'agent/')
+    needs: [review, integration, suite, docs]
+    if: >-
+      always() && (github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'agent/')))
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
+    # one gate per commit at a time, so a late external result and the review run never both decide
     concurrency:
-      group: agentkit-gate-${{ github.repository }}-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
+      group: agentkit-gate-${{ github.repository }}-${{ github.event.pull_request.head.sha || github.event.check_run.head_sha || github.event.sha || 'sweep' }}
+      cancel-in-progress: false
     steps:
       - id: app
         uses: actions/create-github-app-token@v3
@@ -265,48 +353,95 @@ jobs:
           git init -q .agentkit-kit
           git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
           git -C .agentkit-kit checkout -q FETCH_HEAD
-          if [ -d .git ]; then echo .agentkit-kit/ >>.git/info/exclude; fi
-          # a project marketplace (.claude-plugin/marketplace.json) adds the project's own pinned plugins
-          if [ -f .claude-plugin/marketplace.json ]; then echo "project-marketplace=$GITHUB_WORKSPACE" >>"$GITHUB_OUTPUT"; fi
 
       - env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          HEAD: ${{ github.event.pull_request.head.ref }}
-          REVIEW: ${{ needs.review.result }}
-          INTEGRATION: ${{ needs.integration.result }}
-          DOCS: ${{ needs.docs.result }}
+          EVENT: ${{ github.event_name }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          EVENT_SHA: ${{ github.event.pull_request.head.sha || github.event.check_run.head_sha || github.event.sha }}
+          NEEDS: ${{ toJSON(needs) }}
+          EXTERNAL: ${{ inputs.external-checks }}
+          TIMEOUT: ${{ inputs.check-timeout }}
           AUTO_MERGE: ${{ vars.AUTO_MERGE }}
           MAX_ROUNDS: ${{ inputs.max-rounds }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
-          set_status() { .agentkit-kit/scripts/set-status.sh "$REPO" "$n" "$@"; }
           # a newer push cancelled this run's reviews: that run's gate decides
-          if [ "$REVIEW" = cancelled ] || [ "$INTEGRATION" = cancelled ] || [ "$DOCS" = cancelled ]; then exit 0; fi
-          # the implementer's own checklist in the PR body: an unticked criterion is a failed round;
-          # unticked boxes under "## Human verification" wait for a person instead
-          read -r unmet human < <(gh pr view "$PR" --repo "$REPO" --json body --jq .body | .agentkit-kit/scripts/checklist.sh)
-          if [ "$unmet" -gt 0 ]; then REVIEW="$REVIEW, $unmet unmet criteria"; fi
-          if [ "$REVIEW" = success ] && [ "$INTEGRATION" = success ] && [ "$DOCS" = success ]; then
-            if [ "$human" -gt 0 ]; then
-              set_status status:needs-device-check
-              gh pr comment "$PR" --repo "$REPO" --body "agentkit: all checks passed. $human item(s) under **Human verification** need a person: check them (on a device, a staging build or wherever the item says) and tick the boxes in the PR description; ticking the last one approves the PR."
-              exit 0
+          if jq -e 'any(.[]; .result == "cancelled")' <<<"$NEEDS" >/dev/null; then exit 0; fi
+          C=.agentkit-kit/scripts/checks.py
+          judge() {
+            local pr=$1 head sha n files required doc out verdict unmet human failed
+            read -r head sha < <(gh pr view "$pr" --repo "$REPO" --json headRefName,headRefOid --jq '"\(.headRefName) \(.headRefOid)"')
+            n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$head")
+            [ -n "$n" ] || return 0
+            # a newer push has its own run. Decide once: late results only move an issue still in review;
+            # a push (a person's, too) re-gates an approved PR
+            if [ "$EVENT" = pull_request ] && [ "$sha" != "$EVENT_SHA" ]; then return 0; fi
+            local ok=status:review
+            [ "$EVENT" != pull_request ] || ok='status:(review|approved|needs-device-check)'
+            gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qxE "$ok" || return 0
+            set_status() { .agentkit-kit/scripts/set-status.sh "$REPO" "$n" "$@"; }
+            files=$(gh api --paginate "repos/$REPO/pulls/$pr/files" --jq '.[].filename')
+            required=$(python3 "$C" select "$EXTERNAL" <<<"$files" | jq -c '[.[].name]')
+            local since statuses polls=0
+            since=$(gh api "repos/$REPO/commits/$sha" --jq .commit.committer.date)
+            while :; do
+              gh api --paginate "repos/$REPO/commits/$sha/check-runs?per_page=100" --jq '.check_runs[]' >"$RUNNER_TEMP/runs.json"
+              statuses=$(gh api "repos/$REPO/commits/$sha/status" --jq .statuses 2>/dev/null) \
+                || { echo "::warning::cannot read commit statuses: give the agentkit App 'Commit statuses: read'"; statuses='[]'; }
+              doc=$(jq -n --slurpfile runs "$RUNNER_TEMP/runs.json" --argjson statuses "$statuses" \
+                --argjson required "$required" --argjson timeout "$TIMEOUT" --arg since "$since" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                '{check_runs: $runs, statuses: $statuses, required: $required, since: $since, now: $now, timeout: $timeout}')
+              out=$(python3 "$C" gate <<<"$doc")
+              verdict=$(jq -r .verdict <<<"$out")
+              # ponytail: on a push, poll ~5 min for checks still running; later results come by event or the sweep
+              [ "$verdict" = wait ] && [ "$EVENT" = pull_request ] && [ $((polls += 1)) -le 10 ] || break
+              sleep 30
+            done
+            # the implementer's own checklist in the PR body: an unticked criterion is a failed round;
+            # unticked boxes under "## Human verification" wait for a person instead
+            read -r unmet human < <(gh pr view "$pr" --repo "$REPO" --json body --jq .body | .agentkit-kit/scripts/checklist.sh)
+            failed=$(jq -r '.failed[] | "- **\(.name)**: \(.detail)"' <<<"$out")
+            if [ "$unmet" -gt 0 ]; then failed="$failed"$'\n'"- **PR checklist**: $unmet acceptance criteria not ticked"; verdict=fail; fi
+            echo "#$pr ($sha): $verdict $(jq -c .pending <<<"$out")"
+            case $verdict in
+              wait) return 0 ;;
+              timeout)
+                gh pr comment "$pr" --repo "$REPO" --body "agentkit: still no result from $(jq -r '.pending | join(", ")' <<<"$out") after $TIMEOUT minutes ($RUN). Check that these run for this branch, then re-run them or move the issue back to \`status:review\`."
+                set_status status:needs-human reason:env
+                return 0 ;;
+              pass)
+                if [ "$human" -gt 0 ]; then
+                  set_status status:needs-device-check
+                  gh pr comment "$pr" --repo "$REPO" --body "agentkit: all checks passed. $human item(s) under **Human verification** need a person: check them (on a device, a staging build or wherever the item says) and tick the boxes in the PR description; ticking the last one approves the PR."
+                  return 0
+                fi
+                set_status status:approved
+                if [ "$AUTO_MERGE" = true ]; then gh pr merge "$pr" --repo "$REPO" --squash --delete-branch; fi
+                return 0 ;;
+            esac
+            local rounds
+            rounds=$(gh api --paginate "repos/$REPO/issues/$pr/comments" --jq '[.[]|select(.body|contains("<!-- agentkit:round -->"))]|length' | awk '{s+=$1} END {print s+0}')
+            rounds=$((rounds + 1))
+            if [ "$rounds" -ge "$MAX_ROUNDS" ]; then
+              gh pr comment "$pr" --repo "$REPO" --body "<!-- agentkit:round -->
+          agentkit: review round $rounds of $MAX_ROUNDS failed ($RUN). Stopping the fix loop — needs a human.
+
+          $failed"
+              set_status status:needs-human reason:agent-error
+            else
+              gh pr comment "$pr" --repo "$REPO" --body "<!-- agentkit:round -->
+          agentkit: review round $rounds of $MAX_ROUNDS failed ($RUN). Sending back to the implementer.
+
+          $failed"
+              set_status status:changes-requested
             fi
-            set_status status:approved
-            if [ "$AUTO_MERGE" = true ]; then gh pr merge "$PR" --repo "$REPO" --squash --delete-branch; fi
-            exit 0
-          fi
-          rounds=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '[.[]|select(.body|contains("<!-- agentkit:round -->"))]|length' | awk '{s+=$1} END {print s+0}')
-          rounds=$((rounds + 1))
-          if [ "$rounds" -ge "$MAX_ROUNDS" ]; then
-            gh pr comment "$PR" --repo "$REPO" --body "<!-- agentkit:round -->
-          agentkit: review round $rounds of $MAX_ROUNDS failed (review: $REVIEW, integration: $INTEGRATION, docs: $DOCS, $RUN). Stopping the fix loop — needs a human."
-            set_status status:needs-human reason:agent-error
-          else
-            gh pr comment "$PR" --repo "$REPO" --body "<!-- agentkit:round -->
-          agentkit: review round $rounds of $MAX_ROUNDS failed (review: $REVIEW, integration: $INTEGRATION, docs: $DOCS, $RUN). Sending back to the implementer."
-            set_status status:changes-requested
-          fi
+          }
+          case $EVENT in
+            pull_request) prs=$EVENT_PR ;;
+            check_run|status) prs=$(gh api "repos/$REPO/commits/$EVENT_SHA/pulls" --jq '.[] | select(.state == "open") | .number') ;;
+            # schedule / workflow_dispatch: sweep, for timeouts and results whose event never came
+            *) prs=$(gh pr list --repo "$REPO" --state open --json number,headRefName --jq '.[] | select(.headRefName | startswith("agent/")) | .number') ;;
+          esac
+          for pr in $prs; do judge "$pr"; done
