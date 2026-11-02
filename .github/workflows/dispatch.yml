@@ -1,4 +1,4 @@
-# Dispatcher: promotes the top unblocked status:ready issue (not mode:human, not size:m/l; one debt-label issue in every debt-every)
+# Dispatcher: promotes the top unblocked status:ready issue (board Rank first, then board.py's order; not mode:human, not size:m/l; one debt-label issue in every debt-every)
 # to status:in-progress while fewer than WIP issues are in flight; mirrors status
 # labels onto the board; closes the linked issue when an agent PR merges into a
 # non-default branch; approves a PR once its Human verification boxes are ticked;
@@ -175,6 +175,8 @@ jobs:
           WIP: ${{ inputs.wip }}
           EVERY: ${{ inputs.debt-every }}
           DEBT: ${{ inputs.debt-label }}
+          OWNER: ${{ github.repository_owner }}
+          PROJECT: ${{ vars.AGENTKIT_PROJECT }}
         run: |
           inflight=0
           for l in status:in-progress status:review status:changes-requested; do
@@ -197,13 +199,36 @@ jobs:
             grep -qx true <<<"$recent" || due=true
           fi
           echo "debt due: $due"
+          # manual rank: the NUMBER field `Rank` on the Projects board. A board problem must never stop dispatching,
+          # so any failure here warns and leaves every rank null (today's order)
+          ranks='{}'
+          if [ -n "$PROJECT" ]; then
+            # shellcheck disable=SC2016  # $owner, $number and $endCursor are GraphQL variables, not shell
+            if page=$(gh api graphql --paginate -f owner="$OWNER" -F number="$PROJECT" -f query='
+                query($owner: String!, $number: Int!, $endCursor: String) {
+                  repositoryOwner(login: $owner) { ... on ProjectV2Owner { projectV2(number: $number) {
+                    items(first: 100, after: $endCursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        content { ... on Issue { number repository { nameWithOwner } } }
+                        fieldValueByName(name: "Rank") { ... on ProjectV2ItemFieldNumberValue { number } }
+                      }
+                    }
+                  } } }
+                }' 2>&1) \
+              && r=$(jq -cs --arg repo "$REPO" '[.[].data.repositoryOwner.projectV2.items.nodes[]?
+                       | select(.content.repository.nameWithOwner == $repo and .fieldValueByName.number != null)
+                       | {key: (.content.number | tostring), value: .fieldValueByName.number}] | from_entries' <<<"$page" 2>&1); then
+              ranks=$r
+            else
+              msg=${r:-$page}
+              echo "::warning::could not read the board's Rank field, ordering without ranks: ${msg:0:300}"
+            fi
+          fi
           gh api --paginate "repos/$REPO/issues?state=open&labels=status:ready&per_page=100" \
-            | jq -cs --argjson due "$due" --argjson every "$EVERY" --arg debt "$DEBT" '[.[][] | select(.pull_request | not) | {number, author: .user.login, l: [.labels[].name]}
-                   # only agent work small enough for one PR: mode:human is for people, size:m/l must be split first
-                   | select(.l | any(. == "mode:human" or . == "size:m" or . == "size:l") | not)
-                   | {number, author, d: ($every > 0 and ((.l | index($debt) != null) != $due)),
-                      p: (.l | if index("priority:high") then 0 elif index("priority:medium") then 1 elif index("priority:low") then 2 else 3 end)}]
-                  | sort_by(.d, .p, .number)' >"$RUNNER_TEMP/ready.json"
+            | jq -cs --argjson ranks "$ranks" '[.[][] | select(.pull_request | not)
+                   | {number, author: .user.login, labels: [.labels[].name], rank: ($ranks[.number | tostring] // null)}]' \
+            | .agentkit-kit/plugins/agentkit/scripts/board.py order --debt-due "$due" --debt-every "$EVERY" --debt-label "$DEBT" >"$RUNNER_TEMP/ready.json"
           echo "authors=$(jq -r '[.[].author] | unique | join(" ")' "$RUNNER_TEMP/ready.json")" >>"$GITHUB_OUTPUT"
 
       # prompt-injection guard: only issues written by people with write access (or agentkit itself)
