@@ -19,6 +19,7 @@ backlog ──(you)──▶ refining ──refine──▶ ready ──dispatch
 | review | PR opened / pushed / ready for review | three checks in parallel: `review (code)`, `review (security)` — fresh Claude sessions, read-only — and `integration` (`.agentkit/test.sh`) |
 | gate | after the checks | all green → `status:approved` (auto-merge only if repo var `AUTO_MERGE=true`), or `status:needs-device-check` while the PR has unticked items under `## Human verification`; otherwise back to the implementer, max 3 rounds |
 | plan | `/plan` comment on an issue | the issue becomes an epic with sub-issues, all `status:backlog` |
+| decide | `/decide accept <why>` or `/decide reject <why>` on an RFC's PR, by someone with write access | the issue goes back to the implementer, which sets the RFC's status and writes the decision record; the review checks both against your comment |
 
 Every handover to `needs-human` also sets one `reason:*` label (`unclear-spec`, `env`, `flaky`, `too-big`, `agent-error`, `device`); the next status change clears it. Labels go through `scripts/set-status.sh`, which keeps exactly one `status:*`.
 
@@ -77,9 +78,20 @@ covers:                  # code this doc describes; drives the drift check
 
 | Command | Runs in | Checks |
 |---|---|---|
-| `check` | CI `docs` job, Stop hook | title/status present and valid, every `covers` glob matches a tracked file, relative links resolve |
+| `check` | CI `docs` job, Stop hook | title/status present and valid, every `covers` glob matches a tracked file, relative links resolve, every accepted or rejected RFC has a decision record linking it, `supersedes` targets exist and are `superseded` |
 | `index [--check]` | you / the agent (write), CI (check) | `docs/README.md` is the generated index |
 | `drift BASE [--pr-body F]` | CI `docs` job, Stop hook | docs whose covered code changed but the doc did not; a ticked `- [x] docs reviewed: <path> — <why>` line in the PR description clears one |
+
+### Knowledge flow
+
+Loose ideas start in Discussions (**Ideas**; `setup` enables Discussions). When one needs work:
+
+| Question | Issue | Output | Then |
+|---|---|---|---|
+| "what is true / what are the options?" | `type:research` (`/research <question>` or the Research form) | `docs/research/<slug>.md` | feeds an RFC or a feature |
+| "how should we build it?" | `type:rfc` (`/rfc <problem>` or the RFC form) | `docs/rfcs/NNNN-slug.md`, `status: proposed`: options with for and against, recommendation, consequences, rejected options, open questions, threat model when security is involved | you `/decide` on the PR, merge, then `/plan` the accepted RFC into feature issues |
+
+Both run through the normal lifecycle (refine → implement → review); the agent writes docs only and never decides an RFC. Decision records in `docs/decisions/` are what later agents and reviewers hold the code to.
 
 A failed `docs` job fails the review round like any other check and posts what to fix on the PR; the implementer gets it in its fix-round feedback. Repos without `docs/` skip all of it. Search is the `find-knowledge` skill (docs index → decisions → `rg` → repowise when available → issues, PRs, Discussions).
 

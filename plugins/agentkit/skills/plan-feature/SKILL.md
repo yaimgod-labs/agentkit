@@ -5,7 +5,7 @@ description: Turn a short PRD (an issue body or a description in chat) into an e
 
 # Plan a feature into GitHub issues
 
-Input: a PRD — an issue number (read it with `gh issue view <n>`) or text from the user.
+Input: a PRD — an issue number (read it with `gh issue view <n>`), an accepted RFC in `docs/rfcs/` (plan its recommended option and link the RFC and its decision record from the epic), or text from the user.
 
 1. Read the repo's `CLAUDE.md` and the code the feature touches. Ask the user (locally) about anything the PRD leaves ambiguous; in CI, state the assumption in the epic body instead.
 2. Slice the work into sub-issues. Each one:

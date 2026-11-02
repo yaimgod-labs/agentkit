@@ -1,0 +1,24 @@
+name: RFC
+description: A design an agent proposes in docs/rfcs/ for a person to decide with /decide
+labels: ["type:rfc", "status:backlog"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What needs deciding and why now. Link related docs, decisions and issues.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: Must-haves, limits, options already ruled out.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ] the RFC compares at least two options and recommends one
+    validations:
+      required: true

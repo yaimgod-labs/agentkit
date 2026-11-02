@@ -36,6 +36,8 @@ LABELS=(
   "type:feature|a2eeef|New capability"
   "type:bug|d73a4a|Something is broken"
   "type:chore|cfd3d7|Infra, tooling, maintenance"
+  "type:research|bfdadc|Answer a question; the output is docs/research/<slug>.md"
+  "type:rfc|bfdadc|Propose a design; the output is docs/rfcs/NNNN-slug.md, decided with /decide"
   "type:epic|3e4b9e|Parent of sub-issues; never on the status flow"
   "priority:high|b60205|Do first"
   "priority:medium|fbca04|Normal"
@@ -130,6 +132,7 @@ cmd_setup() {
   [ -n "$base" ] || base=$(gh repo view "$repo" --json defaultBranchRef --jq .defaultBranchRef.name)
 
   setup_labels "$repo"
+  gh repo edit "$repo" --enable-discussions >/dev/null  # loose ideas go to Discussions (Ideas) before they become issues
 
   say "variables"
   [ -n "$(var_get "$repo" AGENTKIT_WIP)" ] && [ -z "$wip" ] || gh variable set AGENTKIT_WIP --repo "$repo" --body "${wip:-2}"

@@ -10,7 +10,7 @@ On a re-run the latest comments are a person's answers to your earlier questions
 
 1. Read the repo's `CLAUDE.md`, then use the `find-knowledge` skill for docs, decisions and earlier issues on the same topic, and read the code the issue touches.
 2. Decide:
-   - **type**: `feature`, `bug` or `chore`.
+   - **type**: `feature`, `bug`, `chore`, `research` (a question to answer; the output is a doc) or `rfc` (a design to propose for a person to decide; the output is a doc, no code). Research and RFCs are usually `mode:agent`.
    - **size**: `xs` (under an hour, one file) · `s` (one PR, at most a day) · `m` (several PRs) · `l` (an epic).
    - **mode**: `agent` (the spec is clear and every criterion can be checked by tests or commands in CI) · `pair` (an agent builds it, but a person must check something: a real device, visual taste, hardware; name those checks so the implementer lists them under `## Human verification`) · `human` (needs credentials, accounts, payments, legal or product judgement; the dispatcher never takes it).
    - **status**: `ready` only when size is `xs` or `s`, every acceptance criterion is verifiable, and no question blocks the work. Otherwise `needs-info`. For `m` or `l`, say it must be split first and propose the split (a person can then comment `/plan`).

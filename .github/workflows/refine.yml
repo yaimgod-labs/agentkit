@@ -125,7 +125,7 @@ jobs:
           verdict=$(sed -n 's/^VERDICT: //p' <<<"$result" | tail -1)
           # trust nothing in the verdict beyond these values
           if ! jq -e '(.status|IN("ready","needs-info")) and (.size|IN("xs","s","m","l"))
-                      and (.type|IN("feature","bug","chore")) and (.mode|IN("agent","human","pair"))' <<<"$verdict" >/dev/null 2>&1; then
+                      and (.type|IN("feature","bug","chore","research","rfc")) and (.mode|IN("agent","human","pair"))' <<<"$verdict" >/dev/null 2>&1; then
             echo "::error::no valid VERDICT line in the refiner's answer: ${verdict:-none}"
             exit 1
           fi
@@ -135,7 +135,7 @@ jobs:
           while IFS= read -r l; do
             case " $new " in *" $l "*) ;; *) args+=(--remove-label "$l") ;; esac
           done < <(gh issue view "$N" --repo "$REPO" --json labels \
-                   --jq '.labels[].name | select(test("^(size|mode):") or IN("type:feature","type:bug","type:chore"))')
+                   --jq '.labels[].name | select(test("^(size|mode):") or IN("type:feature","type:bug","type:chore","type:research","type:rfc"))')
           for l in $new; do args+=(--add-label "$l"); done
           gh issue edit "$N" --repo "$REPO" "${args[@]}" >/dev/null
           status=$(jq -r .status <<<"$verdict")

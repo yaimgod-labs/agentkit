@@ -1,0 +1,20 @@
+name: Research
+description: A question an agent answers in docs/research/ (no code)
+labels: ["type:research", "status:backlog"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What must be answered, and what decision it feeds.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What the answer must cover — options compared, measurements, sources.
+      value: |
+        - [ ] 
+    validations:
+      required: true
