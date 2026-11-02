@@ -1,6 +1,6 @@
 ---
 description: Show the project board (status, estimates, next 5 tasks in dispatch order) and reorder it
-argument-hint: [n | move <n> <pos> | unblock <n> | done <n>]
+argument-hint: [n | move <n> <pos> | unblock <n> | unlink <n> <b> | done <n>]
 ---
 
 `$ARGUMENTS` picks the mode. The person never opens GitHub: print what they need to act on, nothing more.
@@ -70,6 +70,15 @@ This repeats `scripts/set-status.sh`'s rule (exactly one `status:*`, at most one
 2. Otherwise ONE edit: `gh issue edit <n>` with `--remove-label <l>` for every `status:*` label present except `status:refining`, every `reason:*` label and `waiting:you` if present, plus `--add-label status:refining` unless it is already there. Print "#<n> unblocked: back to refining".
 
 A dropped dependency's block comment stays on the issue, and that comment is what tells the dispatcher the person has seen it, so the dropped blocker no longer holds the issue.
+
+## `unlink <n> <b>`
+
+`#<b>` is not a real prerequisite of `#<n>` (for example one refine added).
+
+1. `id=$(gh api "repos/$REPO/issues/<b>" --jq .id)`, then `gh api -X DELETE "repos/$REPO/issues/<n>/dependencies/blocked_by/$id"`. If that fails, say `#<b> is not a blocker of #<n>` (or the error) and stop.
+2. Record it, so CI refine never adds it back: `gh issue comment <n> --body "<!-- agentkit:unlinked #<b> -->
+#<b> is no longer a blocker of this issue."`
+3. Print "#<n> no longer waits on #<b>".
 
 ## `done <n>`
 
