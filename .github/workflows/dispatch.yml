@@ -198,8 +198,9 @@ jobs:
         run: |
           candidates=$(jq -r --arg t " $TRUSTED " '.[] | . as $i | select($t | contains(" \($i.author) ")) | .number' "$RUNNER_TEMP/ready.json")
           for n in $candidates; do
-            # grep -c prints 0 but exits 1 when nothing matches; || true keeps pipefail from failing the step
-            open=$(.agentkit-kit/scripts/blockers.sh "$REPO" "$n" open | grep -c . || true)
+            # capture first so an API error stops the step (fail closed); then count, since grep -c exits 1 on zero matches
+            blockers=$(.agentkit-kit/scripts/blockers.sh "$REPO" "$n" open)
+            open=$(grep -c . <<<"$blockers" || true)
             if [ "$open" -gt 0 ]; then echo "#$n blocked by $open open issue(s)"; continue; fi
             .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:in-progress
             echo "promoted #$n"

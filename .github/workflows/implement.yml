@@ -49,6 +49,7 @@ jobs:
           client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
           private-key: ${{ secrets.AGENTKIT_APP_KEY }}
           permission-issues: write
+          permission-actions: read  # Load agentkit reads this run's referenced workflows
 
       - name: Load agentkit
         if: github.event.label.name == 'status:in-progress'
