@@ -14,7 +14,7 @@ backlog ──(you)──▶ refining ──refine──▶ ready ──dispatch
 | Step | Trigger | What runs |
 |---|---|---|
 | refine | `status:refining`, or your comment on a `status:needs-info` issue | Claude (read-only) posts a plan, criteria and questions; the workflow sets `size:*`, `type:*`, `mode:*` and moves the issue to `ready` (size xs/s, nothing unclear) or `needs-info` (assigned to you) |
-| dispatch | every 30 min, any `status:*` label, PR merged or edited | promotes the top unblocked `ready` issue (priority, then oldest; skips `mode:human`, `size:m`, `size:l`) while in-flight < WIP (default 2); mirrors labels to the board's **Stage** field; approves a `needs-verification` PR once its Human verification boxes are all ticked |
+| dispatch | every 30 min, any `status:*` label, PR merged or edited | promotes the top unblocked `ready` issue (board **Rank**, then the debt quota and priority, then oldest; skips `mode:human`, `size:m`, `size:l`) while in-flight < WIP (default 2); mirrors labels to the board's **Stage** field; approves a `needs-verification` PR once its Human verification boxes are all ticked |
 | implement | `status:in-progress` or `status:changes-requested` | Claude (implementer) commits on `agent/<n>-<slug>`; the workflow pushes, opens the PR (`Closes #n`), sets `status:review` |
 | review | PR opened / pushed / ready for review | in parallel: `review (code)`, `review (security)` — fresh Claude sessions, read-only — `docs`, and `integration` (`.agentkit/test.sh`, or each changed `suite`) |
 | gate | after the checks; again on other CI apps' results and every 30 min | every check run and commit status on the PR's head commit counts, other CI included; all green → `status:approved` (auto-merge only if repo var `AUTO_MERGE=true`), or `status:needs-verification` while the PR has unticked items under `## Human verification`; otherwise back to the implementer, max 3 rounds |
@@ -60,6 +60,24 @@ No bot of our own: the [GitHub app for Slack](https://github.com/integrations/sl
 4. For the digest: create a Slack incoming webhook for the channel and `gh secret set SLACK_WEBHOOK_URL --repo <owner/repo>`. The retro arrives through the Discussions subscription.
 
 Repo variables: `AGENTKIT_WIP` (2), `AGENTKIT_BASE` (PR target if not the default branch), `AGENTKIT_RUNNER`, `AUTO_MERGE`, plus `AGENTKIT_CLIENT_ID` / `AGENTKIT_PROJECT` set by the CLI.
+
+## Dependencies, `/board` and `/task`
+
+Dependencies are GitHub's issue dependencies (`blocked_by`). A task never starts while a blocker is open: the dispatcher skips it, and the implement run refuses it (back to `ready`, with a comment) however it reached `in-progress`. A blocker counts as done only when closed as completed. One closed any other way (not planned, duplicate) is dropped: each task waiting on it gets a block comment and `status:blocked` (a task already in work gets the comment only) and leaves `blocked` only on `/board unblock`. Refine records the dependencies it finds. The `closed` trigger on the caller's `issues:` event announces a drop at once; the dispatcher and the implement check catch it anyway, and `gh agentkit upgrade` adds the trigger to an older caller.
+
+In Claude Code (the agentkit plugin):
+
+| Command | Does |
+|---|---|
+| `/board` | waiting on you, in progress, the next 5 in the dispatcher's order (with the ones held by a blocker or too big to take), blocked with reasons; estimates from recent cycle times |
+| `/board <n>` | one task in full: status, what it is, where it stands, what it needs from you |
+| `/board move <n> <pos>` | reorders Up next by writing the board's **Rank** number field, which the dispatcher reads first (`gh agentkit upgrade` adds the field to an older board) |
+| `/board unblock <n>` | a `blocked` task goes back to `refining` |
+| `/board unlink <n> <b>` | removes a wrong blocker; refine will not add it back |
+| `/board done <n>` | closes a `mode:human` task |
+| `/task <what you want>` | refines the request with you in the chat, then files it: `ready` (blockers and any research question linked first), `backlog` while a size m/l split waits for your OK |
+
+Reading and writing the board's Rank needs the `project` scope: `gh auth refresh -s project`.
 
 ## GitHub Free limits
 

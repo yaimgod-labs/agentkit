@@ -5,7 +5,7 @@ shellcheck -x -S warning cli/gh-agentkit/gh-agentkit runner/*.sh scripts/*.sh te
   plugins/agentkit/scripts/lint-on-stop.sh templates/.agentkit/*.sh
 echo "shellcheck: ok"
 # macOS ships bash 3.2, which parses some quoting that shellcheck accepts differently
-/bin/bash -n cli/gh-agentkit/gh-agentkit && echo "bash 3.2 parse: ok"
+for f in cli/gh-agentkit/gh-agentkit scripts/*.sh; do /bin/bash -n "$f"; done && echo "bash 3.2 parse: ok"
 tests/test_guard.sh
 tests/test_set_status.sh
 tests/test_blockers.sh
