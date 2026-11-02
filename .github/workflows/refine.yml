@@ -125,7 +125,8 @@ jobs:
           verdict=$(sed -n 's/^VERDICT: //p' <<<"$result" | tail -1)
           # trust nothing in the verdict beyond these values
           if ! jq -e '(.status|IN("ready","needs-info")) and (.size|IN("xs","s","m","l"))
-                      and (.type|IN("feature","bug","chore","debt","research","rfc")) and (.mode|IN("agent","human","pair"))' <<<"$verdict" >/dev/null 2>&1; then
+                      and (.type|IN("feature","bug","chore","debt","research","rfc")) and (.mode|IN("agent","human","pair"))
+                      and ((has("blocked_by")|not) or (.blocked_by|type=="array" and all(.[]; type=="number" and .==floor and .>0)))' <<<"$verdict" >/dev/null 2>&1; then
             echo "::error::no valid VERDICT line in the refiner's answer: ${verdict:-none}"
             exit 1
           fi
@@ -138,6 +139,13 @@ jobs:
                    --jq '.labels[].name | select(test("^(size|mode):") or IN("type:feature","type:bug","type:chore","type:debt","type:research","type:rfc"))')
           for l in $new; do args+=(--add-label "$l"); done
           gh issue edit "$N" --repo "$REPO" "${args[@]}" >/dev/null
+          # record the dependencies before the status moves, so the issue never reaches ready ahead of its blockers;
+          # one that fails (closed, missing, already linked) is a warning, not a failed run
+          while IFS= read -r b; do
+            id=$(gh api "repos/$REPO/issues/$b" --jq .id 2>/dev/null) \
+              && gh api "repos/$REPO/issues/$N/dependencies/blocked_by" -F issue_id="$id" >/dev/null 2>&1 \
+              || echo "::warning::could not record #$b as a blocker of #$N"
+          done < <(jq -r --argjson n "$N" '(.blocked_by // []) | unique | .[] | select(. != $n)' <<<"$verdict")
           status=$(jq -r .status <<<"$verdict")
           .agentkit-kit/scripts/set-status.sh "$REPO" "$N" "status:$status"
           if [ "$status" = needs-info ] && [ "$SENDER" != "$BOT" ]; then
