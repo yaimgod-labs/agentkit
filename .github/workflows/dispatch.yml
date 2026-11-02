@@ -1,4 +1,4 @@
-# Dispatcher: promotes the top unblocked status:ready issue (not mode:human, not size:m/l)
+# Dispatcher: promotes the top unblocked status:ready issue (not mode:human, not size:m/l; one type:debt in every debt-every)
 # to status:in-progress while fewer than WIP issues are in flight; mirrors status
 # labels onto the board; closes the linked issue when an agent PR merges into a
 # non-default branch; approves a PR once its Human verification boxes are ticked;
@@ -16,6 +16,10 @@ on:
         description: Max issues in flight (in-progress + review + changes-requested)
         type: number
         default: 2
+      debt-every:
+        description: Take one type:debt issue in every N issues (0 = debt is ranked like any other issue)
+        type: number
+        default: 4
     secrets:
       AGENTKIT_APP_KEY:
         required: true
@@ -139,6 +143,7 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
           WIP: ${{ inputs.wip }}
+          EVERY: ${{ inputs.debt-every }}
         run: |
           inflight=0
           for l in status:in-progress status:review status:changes-requested; do
@@ -147,12 +152,27 @@ jobs:
           done
           echo "in flight: $inflight / $WIP"
           [ "$inflight" -lt "$WIP" ] || exit 0
+          # debt quota: debt goes first when none of the last EVERY-1 issues taken into work (open ones in flight,
+          # then the most recently closed) was debt, and last otherwise
+          # ponytail: "recently closed" includes issues people closed by hand; track promotions if that skews it
+          due=false
+          if [ "$EVERY" -gt 0 ]; then
+            recent=$( { gh api "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select(.pull_request | not) | [.labels[].name]
+                          | select(any(. == "status:in-progress" or . == "status:review" or . == "status:changes-requested" or . == "status:approved" or . == "status:needs-device-check"))
+                          | index("type:debt") != null'
+                        gh api "repos/$REPO/issues?state=closed&sort=updated&direction=desc&per_page=50" \
+                          --jq '[.[] | select((.pull_request | not) and .state_reason == "completed")] | sort_by(.closed_at) | reverse | .[] | [.labels[].name] | index("type:debt") != null'
+                      } | awk -v n=$((EVERY - 1)) 'NR <= n')  # awk, not head: reads all input, so no SIGPIPE under pipefail
+            grep -qx true <<<"$recent" || due=true
+          fi
+          echo "debt due: $due"
           gh api --paginate "repos/$REPO/issues?state=open&labels=status:ready&per_page=100" \
-            | jq -cs '[.[][] | select(.pull_request | not) | {number, author: .user.login, l: [.labels[].name]}
+            | jq -cs --argjson due "$due" --argjson every "$EVERY" '[.[][] | select(.pull_request | not) | {number, author: .user.login, l: [.labels[].name]}
                    # only agent work small enough for one PR: mode:human is for people, size:m/l must be split first
                    | select(.l | any(. == "mode:human" or . == "size:m" or . == "size:l") | not)
-                   | {number, author, p: (.l | if index("priority:high") then 0 elif index("priority:medium") then 1 elif index("priority:low") then 2 else 3 end)}]
-                  | sort_by(.p, .number)' >"$RUNNER_TEMP/ready.json"
+                   | {number, author, d: ($every > 0 and ((.l | index("type:debt") != null) != $due)),
+                      p: (.l | if index("priority:high") then 0 elif index("priority:medium") then 1 elif index("priority:low") then 2 else 3 end)}]
+                  | sort_by(.d, .p, .number)' >"$RUNNER_TEMP/ready.json"
           echo "authors=$(jq -r '[.[].author] | unique | join(" ")' "$RUNNER_TEMP/ready.json")" >>"$GITHUB_OUTPUT"
 
       # prompt-injection guard: only issues written by people with write access (or agentkit itself)

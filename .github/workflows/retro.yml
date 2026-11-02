@@ -1,0 +1,147 @@
+# Weekly retro: scripts/retro.py counts the week (cycle time, fix rounds, handovers); a read-only Claude
+# reads the issues behind them and proposes at most 3 changes; the result is posted as a Discussion.
+# Subscribe the Slack channel to Discussions and the retro shows up there too.
+name: agentkit-retro
+
+on:
+  workflow_call:
+    inputs:
+      agentkit-ref:
+        description: Override the kit commit, branch or tag to load scripts and the plugin from (default — the commit the caller's `uses:` resolved to)
+        type: string
+        default: ""
+      model:
+        description: Claude model for the retro agent
+        type: string
+        default: claude-opus-5-5
+      plugins:
+        description: Extra plugins (newline list of NAME@MARKETPLACE — `agentkit` for the kit's pinned externals, or the name in this repo's .claude-plugin/marketplace.json)
+        type: string
+        default: ""
+      days:
+        description: How many days the retro covers
+        type: number
+        default: 7
+      category:
+        description: Discussions category the retro is posted in
+        type: string
+        default: General
+    secrets:
+      AGENTKIT_APP_KEY:
+        required: true
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  retro:
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    permissions:
+      contents: read  # checkout of a private repo
+    env:
+      REPO: ${{ github.repository }}
+      DAYS: ${{ inputs.days }}
+    steps:
+      # the workflow's own token: create-github-app-token has no discussions input, so this one keeps the
+      # installation's permissions; it never reaches Claude
+      - id: write
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+
+      # what Claude gets: read the repo, issues and PRs; no writes at all
+      - id: read
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # the kit's plugin, scripts and actions, from the repo and commit this workflow itself was loaded from
+      # (the caller's `uses:`), so no owner or ref is written down anywhere in the kit
+      - name: Load agentkit
+        id: kit
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: retro.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          # ponytail: anonymous fetch, so the kit repo must be public; add token auth for a private fork
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+          if [ -d .git ]; then echo .agentkit-kit/ >>.git/info/exclude; fi
+          # a project marketplace (.claude-plugin/marketplace.json) adds the project's own pinned plugins
+          if [ -f .claude-plugin/marketplace.json ]; then echo "project-marketplace=$GITHUB_WORKSPACE" >>"$GITHUB_OUTPUT"; fi
+
+      - name: Count the week
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+        run: |
+          mkdir -p .agentkit-retro && echo .agentkit-retro/ >>.git/info/exclude
+          since=$(date -u -d "-$DAYS days" +%Y-%m-%dT%H:%M:%SZ)
+          gh api --paginate "repos/$REPO/issues?state=all&since=$since&per_page=100" \
+            | jq -s '[.[][] | select(.pull_request | not) | {number, title, closed_at, state_reason, labels: [.labels[].name]}]' >"$RUNNER_TEMP/issues.json"
+          # ponytail: one events call per issue touched this week; fine for a week of one repo
+          for n in $(jq -r '.[].number' "$RUNNER_TEMP/issues.json"); do
+            gh api --paginate "repos/$REPO/issues/$n/events" | jq -sc --arg n "$n" '{($n): [.[][] | select(.event == "labeled") | {event, label, created_at}]}'
+          done | jq -s 'add // {}' >"$RUNNER_TEMP/events.json"
+          jq -n --arg since "$since" --slurpfile i "$RUNNER_TEMP/issues.json" --slurpfile e "$RUNNER_TEMP/events.json" \
+            '{since: $since, issues: [$i[0][] | . + {events: ($e[0][.number | tostring] // [])}]}' \
+            | python3 .agentkit-kit/scripts/retro.py >.agentkit-retro/metrics.md
+          cat .agentkit-retro/metrics.md
+
+      # issue text is untrusted input; Claude's token is read-only and its answer only becomes a Discussion a person reads
+      - id: claude
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ steps.read.outputs.token }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.read.outputs.token }}
+          plugin_marketplaces: |
+            ${{ github.workspace }}/.agentkit-kit
+            ${{ steps.kit.outputs.project-marketplace }}
+          plugins: |
+            agentkit@agentkit
+            ${{ inputs.plugins }}
+          prompt: |
+            Repository ${{ github.repository }}: write the agent-pipeline retro for the last ${{ inputs.days }} days.
+            The numbers are in .agentkit-retro/metrics.md; use them as they are. Read the issues behind the fix rounds
+            and handovers (`gh issue view N --comments`, their PRs' review comments) and find what caused them.
+            Answer with at most 3 proposed changes that would have prevented them: a CLAUDE.md line, a skill or
+            prompt edit, a label or workflow setting. For each: the change, the file, and the issues that show it.
+            If nothing needs changing, say so in one line. Your answer is posted as is. Do not edit files.
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns 40
+            --allowedTools Bash(gh:*),Bash(rg:*),Read,Glob,Grep
+
+      - name: Post the retro
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          EXEC: ${{ steps.claude.outputs.execution_file }}
+          CATEGORY: ${{ inputs.category }}
+          Q_IDS: 'query($o:String!,$r:String!){repository(owner:$o,name:$r){id discussionCategories(first:50){nodes{id name}}}}'
+          Q_POST: 'mutation($r:ID!,$c:ID!,$t:String!,$b:String!){createDiscussion(input:{repositoryId:$r,categoryId:$c,title:$t,body:$b}){discussion{url}}}'
+        run: |
+          proposals=$(jq -r '[.[] | select(.type=="result")] | last | .result // ""' "$EXEC")
+          body=$(printf '## Last %s days\n\n%s\n\n## Proposed changes\n\n%s\n' "$DAYS" "$(cat .agentkit-retro/metrics.md)" "${proposals:-none}")
+          printf '%s\n' "$body" >>"$GITHUB_STEP_SUMMARY"
+          ids=$(gh api graphql -f o="${REPO%/*}" -f r="${REPO#*/}" -f query="$Q_IDS")
+          rid=$(jq -r .data.repository.id <<<"$ids")
+          cid=$(jq -r --arg c "$CATEGORY" '.data.repository.discussionCategories.nodes[] | select(.name == $c) | .id' <<<"$ids")
+          [ -n "$cid" ] || { echo "::error::no Discussions category '$CATEGORY': enable Discussions or set the retro's category input"; exit 1; }
+          gh api graphql -f r="$rid" -f c="$cid" -f t="Retro: $DAYS days to $(date -u +%F)" -f b="$body" --jq .data.createDiscussion.discussion.url -f query="$Q_POST"

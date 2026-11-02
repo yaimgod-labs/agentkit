@@ -19,6 +19,8 @@ backlog ──(you)──▶ refining ──refine──▶ ready ──dispatch
 | review | PR opened / pushed / ready for review | in parallel: `review (code)`, `review (security)` — fresh Claude sessions, read-only — `docs`, and `integration` (`.agentkit/test.sh`, or each changed `suite`) |
 | gate | after the checks; again on other CI apps' results and every 30 min | every check run and commit status on the PR's head commit counts, other CI included; all green → `status:approved` (auto-merge only if repo var `AUTO_MERGE=true`), or `status:needs-device-check` while the PR has unticked items under `## Human verification`; otherwise back to the implementer, max 3 rounds |
 | plan | `/plan` comment on an issue | the issue becomes an epic with sub-issues, all `status:backlog` |
+| digest | daily, 07:00 UTC | lists what waits on you (needs-info, needs-human, needs-device-check, approved, blocked), least recently updated first, in Slack and the run summary; nothing waiting, no post |
+| retro | weekly, Monday 08:00 UTC | counts the week (cycle time, fix rounds, handover reasons, debt share); a read-only Claude reads the issues behind them and proposes at most 3 changes; posted as a Discussion (category input, default General) |
 | decide | `/decide accept <why>` or `/decide reject <why>` on an RFC's PR, by someone with write access | the issue goes back to the implementer, which sets the RFC's status and writes the decision record; the review checks both against your comment |
 
 Every handover to `needs-human` also sets one `reason:*` label (`unclear-spec`, `env`, `flaky`, `too-big`, `agent-error`, `device`); the next status change clears it. Labels go through `scripts/set-status.sh`, which keeps exactly one `status:*`.
@@ -41,6 +43,19 @@ Guardrails: every write uses the `agentkit-bot` App token (so events chain); Cla
 | Self-hosted runner | `gh variable set AGENTKIT_RUNNER --repo <owner/repo> --body self-hosted` |
 
 Then fill in **Commands** in `CLAUDE.md` and `.agentkit/test.sh`, and run `gh agentkit doctor <owner/repo>`.
+
+Tech debt: label it `type:debt` (or let refine). The dispatcher takes one debt issue in every 4 it starts (`debt-every` on the dispatch job; 0 ranks debt like anything else).
+
+Dependencies: `.github/dependabot.yml` (added by `init`/`upgrade`) opens weekly update PRs for GitHub Actions; add your package managers. They get the same review jobs and never auto-merge. Dependabot's runs only see Dependabot secrets, so also add `AGENTKIT_APP_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` under **Settings → Secrets and variables → Dependabot**.
+
+### Slack
+
+No bot of our own: the [GitHub app for Slack](https://github.com/integrations/slack), one channel per project.
+
+1. In the channel: `/github subscribe <owner/repo> issues pulls discussions releases`, then `/github unsubscribe <owner/repo> commits deployments`.
+2. Cut the agents' churn: `/github subscribe <owner/repo> +label:"status:needs-human"`. The app keeps one label filter per subscription, so the daily digest covers the other statuses that wait on you.
+3. Reply to an issue from its Slack thread; it lands on the issue, so an answer on a `needs-info` issue re-runs refine.
+4. For the digest: create a Slack incoming webhook for the channel and `gh secret set SLACK_WEBHOOK_URL --repo <owner/repo>`. The retro arrives through the Discussions subscription.
 
 Repo variables: `AGENTKIT_WIP` (2), `AGENTKIT_BASE` (PR target if not the default branch), `AGENTKIT_RUNNER`, `AUTO_MERGE`, plus `AGENTKIT_CLIENT_ID` / `AGENTKIT_PROJECT` set by the CLI.
 

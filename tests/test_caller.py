@@ -32,7 +32,7 @@ expect("an up-to-date caller is unchanged (comments aside)", code(out) == code(c
 out = merge(FIX / "old.yml")
 expect("old caller gains the refine job", "\n  refine:\n" in out and "refine.yml@main" in out, out)
 expect("old caller gains the edited PR event", "ready_for_review, edited, closed]" in out, out)
-expect("project refs kept (no @v1 left)", not any("@v1" in l for l in out.splitlines() if "uses:" in l) and out.count("agentkit-ref: main") == 5, out)
+expect("project refs kept (no @v1 left)", not any("@v1" in l for l in out.splitlines() if "uses:" in l) and out.count("agentkit-ref: main") == 7, out)
 expect("project plugins kept", "ponytail@agentkit" in out, out)
 expect("template example comments dropped where the project has with:", "#   plugins:" not in out.split("\n  plan:")[0].split("\n  implement:")[1], out)
 expect("project header comment kept", out.startswith("# agentkit CANARY caller"), out)

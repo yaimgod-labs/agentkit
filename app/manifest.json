@@ -11,6 +11,7 @@
     "pull_requests": "write",
     "checks": "read",
     "statuses": "read",
+    "discussions": "write",
     "actions": "read",
     "metadata": "read",
     "organization_projects": "write"

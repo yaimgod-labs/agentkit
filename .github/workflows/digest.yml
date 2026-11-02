@@ -1,0 +1,52 @@
+# Daily digest: what waits on a person (needs-info, needs-human, needs-device-check, approved, blocked),
+# least recently updated first, posted to Slack (SLACK_WEBHOOK_URL) and the run summary. Nothing waiting, no post.
+name: agentkit-digest
+
+on:
+  workflow_call:
+    inputs:
+      agentkit-ref:
+        description: Unused (the digest loads nothing from the kit); accepted so every kit job takes the same pin
+        type: string
+        default: ""
+    secrets:
+      AGENTKIT_APP_KEY:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: false
+
+permissions: {}
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-issues: read
+
+      - name: Build and post the digest
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          SLACK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          text=""
+          for s in "needs-info|Needs your answer" "needs-human|Handed over to you" "needs-device-check|Needs a device check" \
+                   "approved|Approved, waiting for your merge" "blocked|Blocked"; do
+            items=$(gh issue list --repo "$REPO" --state open --label "status:${s%%|*}" --limit 50 --json number,title,url,updatedAt,labels \
+              --jq 'sort_by(.updatedAt)[] | "• <\(.url)|#\(.number)> \(.title | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;")) — last update \(.updatedAt[:10])\([.labels[].name | select(startswith("reason:"))] | if length > 0 then " (\(join(", ")))" else "" end)"')
+            if [ -n "$items" ]; then text+="*${s#*|}*"$'\n'"$items"$'\n\n'; fi
+          done
+          if [ -z "$text" ]; then echo "nothing waits on a person"; exit 0; fi
+          text="*agentkit digest — $REPO*"$'\n\n'"$text"
+          printf '%s\n' "$text" >>"$GITHUB_STEP_SUMMARY"
+          if [ -n "$SLACK" ]; then
+            jq -n --arg t "$text" '{text: $t}' | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$SLACK" >/dev/null
+          else
+            echo "::notice::SLACK_WEBHOOK_URL is not set; the digest is only in this run's summary"
+          fi

@@ -36,6 +36,7 @@ LABELS=(
   "type:feature|a2eeef|New capability"
   "type:bug|d73a4a|Something is broken"
   "type:chore|cfd3d7|Infra, tooling, maintenance"
+  "type:debt|cfd3d7|Tech debt; the dispatcher takes one in every debt-every issues (default 4)"
   "type:research|bfdadc|Answer a question; the output is docs/research/<slug>.md"
   "type:rfc|bfdadc|Propose a design; the output is docs/rfcs/NNNN-slug.md, decided with /decide"
   "type:epic|3e4b9e|Parent of sub-issues; never on the status flow"
@@ -343,6 +344,9 @@ cmd_doctor() {
       jq -e '.permissions.statuses' <<<"$inst" >/dev/null \
         && ok "App can read commit statuses" \
         || warn "App cannot read commit statuses: the gate ignores them (App settings → Permissions → Commit statuses: Read, then accept on the installation)"
+      [ "$(jq -r '.permissions.discussions // ""' <<<"$inst")" = write ] \
+        && ok "App can write Discussions" \
+        || warn "App cannot write Discussions: the weekly retro cannot post (App settings → Permissions → Discussions: Read and write, then accept on the installation)"
     else
       bad "App not installed on $repo"
     fi
