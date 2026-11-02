@@ -10,6 +10,7 @@
     "issues": "write",
     "pull_requests": "write",
     "checks": "read",
+    "statuses": "read",
     "actions": "read",
     "metadata": "read",
     "organization_projects": "write"

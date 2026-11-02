@@ -8,6 +8,10 @@ on:
     types: [created]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited, closed]
+  # results from other CI apps (CircleCI, Buildkite, Jenkins, …) re-run the review gate
+  check_run:
+    types: [completed]
+  status:
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch:
@@ -64,9 +68,13 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   review:
+    # PR pushes run the full review; other CI apps' results and the schedule re-run only its gate
+    # (check runs made by GitHub Actions are skipped, so the gate never triggers itself)
     if: >-
-      github.event_name == 'pull_request' && github.event.action != 'closed' &&
-      github.event.action != 'edited' && !github.event.pull_request.draft
+      (github.event_name == 'pull_request' && github.event.action != 'closed' &&
+       github.event.action != 'edited' && !github.event.pull_request.draft) ||
+      (github.event_name == 'check_run' && github.event.check_run.app.slug != 'github-actions') ||
+      github.event_name == 'status' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     uses: example-org/agentkit/.github/workflows/review.yml@main
     with:
       agentkit-ref: main
