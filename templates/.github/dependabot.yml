@@ -1,0 +1,10 @@
+# Dependabot opens weekly update PRs; agentkit reviews them like any other PR and nothing auto-merges.
+# Dependabot's runs only see Dependabot secrets: add AGENTKIT_APP_KEY and CLAUDE_CODE_OAUTH_TOKEN under
+# Settings → Secrets and variables → Dependabot, or its PRs get no review.
+# Add one entry per package manager in this repo, e.g. `npm` (directory: /web) or `pip` (directory: /).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

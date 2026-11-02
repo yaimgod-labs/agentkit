@@ -1,0 +1,61 @@
+# Daily digest: open issues that wait on a person (the `statuses` input), least recently updated first, posted to Slack (SLACK_WEBHOOK_URL) and the run summary. Nothing waiting, no post.
+name: agentkit-digest
+
+on:
+  workflow_call:
+    inputs:
+      agentkit-ref:
+        description: Unused (the digest loads nothing from the kit); accepted so every kit job takes the same pin
+        type: string
+        default: ""
+      statuses:
+        description: One `label|heading` per line; each label's open issues become a section, in this order
+        type: string
+        default: |
+          status:needs-info|Needs your answer
+          status:needs-human|Handed over to you
+          status:needs-verification|Needs your verification
+          status:approved|Approved, waiting for your merge
+          status:blocked|Blocked
+    secrets:
+      AGENTKIT_APP_KEY:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: false
+
+permissions: {}
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-issues: read
+
+      - name: Build and post the digest
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          SLACK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          STATUSES: ${{ inputs.statuses }}
+        run: |
+          text=""
+          while IFS='|' read -r label heading; do
+            [ -n "$label" ] || continue
+            items=$(gh issue list --repo "$REPO" --state open --label "$label" --limit 50 --json number,title,url,updatedAt,labels \
+              --jq 'sort_by(.updatedAt)[] | "• <\(.url)|#\(.number)> \(.title | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;")) — last update \(.updatedAt[:10])\([.labels[].name | select(startswith("reason:"))] | if length > 0 then " (\(join(", ")))" else "" end)"')
+            if [ -n "$items" ]; then text+="*${heading:-$label}*"$'\n'"$items"$'\n\n'; fi
+          done <<<"$STATUSES"
+          if [ -z "$text" ]; then echo "nothing waits on a person"; exit 0; fi
+          text="*agentkit digest — $REPO*"$'\n\n'"$text"
+          printf '%s\n' "$text" >>"$GITHUB_STEP_SUMMARY"
+          if [ -n "$SLACK" ]; then
+            jq -n --arg t "$text" '{text: $t}' | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$SLACK" >/dev/null
+          else
+            echo "::notice::SLACK_WEBHOOK_URL is not set; the digest is only in this run's summary"
+          fi

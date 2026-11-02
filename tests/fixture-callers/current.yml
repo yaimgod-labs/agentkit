@@ -14,6 +14,8 @@ on:
   status:
   schedule:
     - cron: "*/30 * * * *"
+    - cron: "0 7 * * *"  # daily digest (UTC)
+    - cron: "0 8 * * 1"  # weekly retro (UTC, Mondays)
   workflow_dispatch:
 
 permissions:
@@ -76,6 +78,22 @@ jobs:
       (github.event_name == 'check_run' && github.event.check_run.app.slug != 'github-actions') ||
       github.event_name == 'status' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     uses: example-org/agentkit/.github/workflows/review.yml@main
+    with:
+      agentkit-ref: main
+    secrets:
+      AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  digest:
+    if: github.event.schedule == '0 7 * * *'
+    uses: example-org/agentkit/.github/workflows/digest.yml@main
+    secrets:
+      AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  retro:
+    if: github.event.schedule == '0 8 * * 1'
+    uses: example-org/agentkit/.github/workflows/retro.yml@main
     with:
       agentkit-ref: main
     secrets:
