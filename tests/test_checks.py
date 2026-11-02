@@ -56,6 +56,7 @@ expect("a required check that passed is fine", gate([cr("mobile-ci")], required=
 st = lambda ctx, state, d="": {"context": ctx, "state": state, "description": d, "target_url": f"https://j/{ctx}"}
 r = gate(statuses=[st("jenkins", "failure", "build broke")])
 expect("a failed commit status fails", r["verdict"] == "fail" and "build broke" in r["failed"][0]["detail"], r)
+expect("no empty link when a status has no URL", not gate(statuses=[{"context": "x", "state": "error"}])["failed"][0]["detail"].endswith("()"))
 expect("a pending status waits", gate(statuses=[st("jenkins", "pending")])["verdict"] == "wait")
 expect("a status satisfies a required name", gate(statuses=[st("jenkins", "success")], required=["jenkins"])["verdict"] == "pass")
 r = gate([cr("a", conclusion="failure"), cr("b", status="queued", conclusion=None)])

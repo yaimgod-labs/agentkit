@@ -28,6 +28,10 @@ def iso(t):
     return datetime.fromisoformat(t.replace("Z", "+00:00"))
 
 
+def link(url):
+    return f" ({url})" if url else ""
+
+
 def gate(doc):
     failed, pending, seen = [], [], set()
     latest = {}
@@ -43,14 +47,14 @@ def gate(doc):
         elif c["conclusion"] in FAILED:
             out = c.get("output") or {}
             detail = " — ".join(x for x in (out.get("title"), out.get("summary")) if x)[:1500]
-            failed.append({"name": name, "detail": f"{c['conclusion']}: {detail or 'no summary'} ({c.get('html_url', '')})"})
+            failed.append({"name": name, "detail": f"{c['conclusion']}: {detail or 'no summary'}{link(c.get('html_url'))}"})
         # success, neutral, skipped pass; cancelled means a newer run superseded it
     for s in doc.get("statuses", []):  # the combined status API already returns the latest per context
         seen.add(s["context"])
         if s["state"] == "pending":
             pending.append(s["context"])
         elif s["state"] in ("failure", "error"):
-            failed.append({"name": s["context"], "detail": f"{s['state']}: {s.get('description') or 'no description'} ({s.get('target_url') or ''})"})
+            failed.append({"name": s["context"], "detail": f"{s['state']}: {s.get('description') or 'no description'}{link(s.get('target_url'))}"})
     pending += [n for n in doc.get("required", []) if n not in seen]
     if failed:
         verdict = "fail"
