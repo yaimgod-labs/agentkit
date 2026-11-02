@@ -13,7 +13,8 @@ description: Security review of a pull request diff — injection, authn/authz, 
    - unsafe deserialization, crypto misuse, weak randomness for security values;
    - new dependencies that are unmaintained, typosquats, or pulled from untrusted sources;
    - CI changes that widen permissions, run untrusted input, or expose secrets;
-   - anything the repo's `CLAUDE.md` names as a security rule.
+   - anything the repo's `CLAUDE.md` names as a security rule;
+   - an RFC (`docs/rfcs/`) whose design touches auth, data, secrets or the network but has no threat model, or whose recommended option has a concrete exploit path it does not address.
 3. Report only findings with a concrete exploit path. No theoretical hardening advice, no style.
 4. Leave an inline comment per finding: severity (high, medium, low), exploit path, fix.
 5. Verdict: `fail` for any high or medium finding, `pass` otherwise.

@@ -8,7 +8,7 @@ description: Answer "what did we decide / how does X work / where is Y / why is 
 Search in this order and stop when the question is answered. Cite every claim with a link or `path:line`.
 
 1. **Docs index:** read `docs/README.md` (generated list of every doc with status and summary). Open the matching docs.
-2. **Decisions first for "why" questions:** `docs/decisions/` (accepted records win; check `superseded` ones only for history).
+2. **Decisions first for "why" questions:** `docs/decisions/` (accepted records win; check `superseded` ones only for history), then `docs/rfcs/` for designs proposed or rejected and `docs/research/` for questions already answered.
 3. **Full text:** `rg -n -i "<terms>" docs/` then, if needed, the code: `rg -n "<identifier>"`.
 4. **Code index (local only):** if repowise MCP tools are available, use `get_answer` / `search_codebase` / `get_why`.
 5. **Work history:** `gh search issues "<terms>" --repo <owner/repo> --state all`, `gh search prs "<terms>" --repo <owner/repo>`,

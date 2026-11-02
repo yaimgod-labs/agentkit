@@ -96,11 +96,14 @@ jobs:
           mkdir -p .agentkit-review
           body=$(gh pr view "$PR" --repo "$REPO" --json title,body --jq '"# PR: \(.title)\n\n\(.body)"')
           printf '%s\n' "$body" >.agentkit-review/pr.md
+          # an RFC's /decide comments, so the reviewer can check the decision record against them
+          gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq '.[] | select(.body | test("^/decide (accept|reject)"; "i")) | "\n## Decision comment by \(.user.login)\n\n\(.body)\n"' >>.agentkit-review/pr.md
           n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
           [ -n "$n" ] || n=$(grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' <<<"$body" | head -n1 | grep -oE '[0-9]+' || true)
           # --json, not --comments: piped, --comments prints only the comments (no title, body or criteria)
-          if [ -n "$n" ]; then gh issue view "$n" --repo "$REPO" --json number,title,body,comments \
-            --jq '"# Issue #\(.number): \(.title)\n\n\(.body)\n\n## Comments\n" + ([.comments[] | "\n### \(.author.login)\n\n\(.body)\n"] | join(""))' >.agentkit-review/issue.md
+          if [ -n "$n" ]; then gh issue view "$n" --repo "$REPO" --json number,title,labels,body,comments \
+            --jq '"# Issue #\(.number): \(.title)\n\nLabels: \([.labels[].name] | join(", "))\n\n\(.body)\n\n## Comments\n" + ([.comments[] | "\n### \(.author.login)\n\n\(.body)\n"] | join(""))' >.agentkit-review/issue.md
           else echo "No linked issue." >.agentkit-review/issue.md; fi
           [ -s .agentkit-review/issue.md ] || { echo "::error::linked issue export is empty"; exit 1; }
           git diff "origin/$BASE...HEAD" >.agentkit-review/diff.patch

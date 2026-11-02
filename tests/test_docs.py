@@ -47,6 +47,23 @@ with tempfile.TemporaryDirectory() as tmp:
     expect("stale index fails --check", run("index", "--check").returncode == 1)
     os.remove("docs/bad.md"); os.remove("docs/none.md")
 
+    # decisions flow: an accepted/rejected RFC needs a decision record linking it; supersedes targets must be superseded
+    write("docs/rfcs/0001-cache.md", "---\ntitle: Cache\nstatus: accepted\n---\n")
+    write("docs/rfcs/0002-queue.md", "---\ntitle: Queue\nstatus: proposed\n---\n")
+    write("docs/decisions/0001-old.md", "---\ntitle: Old\nstatus: accepted\n---\n")
+    write("docs/decisions/0002-new.md", "---\ntitle: New\nstatus: accepted\nsupersedes: [0001, 0009]\n---\n")
+    out = run("check").stdout
+    expect("accepted RFC without a decision record fails", "rfcs/0001-cache.md: `accepted` RFC has no decision record" in out, out)
+    expect("proposed RFC needs no record", "0002-queue.md" not in out, out)
+    expect("supersedes target must be marked superseded", "supersedes 0001, which is not `status: superseded`" in out, out)
+    expect("supersedes target must exist", "supersedes 0009, which does not exist" in out, out)
+    write("docs/decisions/0003-cache.md", "---\ntitle: Use a cache\nstatus: accepted\n---\nFrom [the RFC](../rfcs/0001-cache.md).\n")
+    write("docs/decisions/0001-old.md", "---\ntitle: Old\nstatus: superseded\n---\n")
+    write("docs/decisions/0002-new.md", "---\ntitle: New\nstatus: accepted\nsupersedes: [0001]\n---\n")
+    r = run("check"); expect("linked record and superseded target pass", r.returncode == 0, r.stdout)
+    for f in ["docs/rfcs/0001-cache.md", "docs/rfcs/0002-queue.md", "docs/decisions/0001-old.md", "docs/decisions/0002-new.md", "docs/decisions/0003-cache.md"]:
+        os.remove(f)
+
     sh("git", "checkout", "-qb", "feature")
     write("src/payments/retry.py", "b\n")
     sh("git", "commit", "-qam", "change payments")
