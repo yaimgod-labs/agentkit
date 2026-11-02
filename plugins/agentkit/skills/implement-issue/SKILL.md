@@ -20,6 +20,9 @@ description: Implement one GitHub issue end to end against its acceptance criter
 10. Never push, never open a PR, never change labels: in CI the workflow does that; locally the human decides.
 11. Your final message becomes the PR description, so write it for a reviewer, in plain full sentences even if a terse-prose mode is active, and in this shape only:
    ```
+   ## Summary
+   <2–3 sentences, plain words: what changed and how, for the person who reads the "done" message>
+
    ## Acceptance criteria
    - [x] <criterion> — <evidence: test name, command and result, or file:line>
    - [ ] <criterion> — not verified: <why>
