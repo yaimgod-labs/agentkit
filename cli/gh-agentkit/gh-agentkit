@@ -282,6 +282,7 @@ sync_checkout() {
 cmd_upgrade() {
   local repo=${1:?owner/repo}
   setup_labels "$repo"
+  gh repo edit "$repo" --enable-discussions >/dev/null  # the weekly retro posts there
   setup_board "$repo"
   local def; def=$(gh repo view "$repo" --json defaultBranchRef --jq .defaultBranchRef.name)
   local tmp; tmp=$(mktemp -d -t agentkit-upgrade)

@@ -143,5 +143,5 @@ jobs:
           ids=$(gh api graphql -f o="${REPO%/*}" -f r="${REPO#*/}" -f query="$Q_IDS")
           rid=$(jq -r .data.repository.id <<<"$ids")
           cid=$(jq -r --arg c "$CATEGORY" '.data.repository.discussionCategories.nodes[] | select(.name == $c) | .id' <<<"$ids")
-          [ -n "$cid" ] || { echo "::error::no Discussions category '$CATEGORY': enable Discussions or set the retro's category input"; exit 1; }
+          [ -n "$cid" ] || { echo "::error::no Discussions category '$CATEGORY': turn Discussions on (gh agentkit upgrade does), or set the retro's category input"; exit 1; }
           gh api graphql -f r="$rid" -f c="$cid" -f t="Retro: $DAYS days to $(date -u +%F)" -f b="$body" --jq .data.createDiscussion.discussion.url -f query="$Q_POST"
