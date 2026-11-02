@@ -1,0 +1,38 @@
+# One Claude run's turns, estimated cost and minutes: a line in the job summary, and an artifact
+# (agentkit-usage-<job>, kept 35 days) that the weekly retro adds up per job.
+name: agentkit-usage
+description: Record a Claude run's turns, estimated cost and duration
+inputs:
+  execution-file:
+    description: claude-code-action's execution_file output
+    required: true
+  job:
+    description: What the retro groups by (implement, review-code, …); unique within one workflow run
+    required: true
+  model:
+    description: The model the run used
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: read
+      shell: bash
+      env:
+        EXEC: ${{ inputs.execution-file }}
+        JOB: ${{ inputs.job }}
+        MODEL: ${{ inputs.model }}
+      run: |
+        dir="$RUNNER_TEMP/agentkit-usage-$JOB"
+        mkdir -p "$dir"
+        jq -c --arg job "$JOB" --arg model "$MODEL" '[.[] | select(.type == "result")] | last
+          | {job: $job, model: $model, turns: (.num_turns // 0), cost_usd: (.total_cost_usd // 0),
+             minutes: ((.duration_ms // 0) / 6000 | round / 10), error: (.is_error != false)}' "$EXEC" >"$dir/usage.json"
+        jq -r '"**\(.job)** (\(.model)): \(.turns) turns, \(.minutes) min, est. $\(.cost_usd * 100 | round / 100)"' \
+          "$dir/usage.json" >>"$GITHUB_STEP_SUMMARY"
+        echo "dir=$dir" >>"$GITHUB_OUTPUT"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: agentkit-usage-${{ inputs.job }}
+        path: ${{ steps.read.outputs.dir }}/usage.json
+        retention-days: 35
+        overwrite: true  # a re-run of the job replaces its earlier attempt

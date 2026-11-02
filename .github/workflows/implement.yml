@@ -88,7 +88,8 @@ jobs:
 
       # only act on issues written by people with write access or by agentkit itself;
       # an untrusted author fails here and the issue goes to status:needs-human
-      - uses: ./.agentkit-kit/.github/actions/trusted
+      - id: trust
+        uses: ./.agentkit-kit/.github/actions/trusted
         with:
           logins: ${{ github.event.issue.user.login }}
           token: ${{ steps.write.outputs.token }}
@@ -126,14 +127,21 @@ jobs:
         run: |
           mkdir -p .agentkit-feedback && echo .agentkit-feedback/ >>.git/info/exclude
           read -r pr sha < <(gh pr view "$BRANCH" --repo "$REPO" --json number,headRefOid --jq '"\(.number) \(.headRefOid)"')
+          # this round only: bots' comments on the current head (earlier rounds' findings were fixed or argued
+          # already), and everything people wrote, which is rare and may still be open
+          SINCE=$(gh api "repos/$REPO/commits/$sha" --jq .commit.committer.date)
+          export SINCE
           {
             echo "# Review feedback on PR #$pr"
             echo; echo "## PR comments"
-            gh api --paginate "repos/$REPO/issues/$pr/comments" --jq '.[] | "\n### \(.user.login)\n\n\(.body)\n"'
+            gh api --paginate "repos/$REPO/issues/$pr/comments" \
+              --jq '.[] | select(.user.type != "Bot" or .created_at > env.SINCE) | "\n### \(.user.login)\n\n\(.body)\n"'
             echo; echo "## Reviews"
-            gh api --paginate "repos/$REPO/pulls/$pr/reviews" --jq '.[] | select((.body // "") != "") | "\n### \(.user.login) (\(.state))\n\n\(.body)\n"'
+            gh api --paginate "repos/$REPO/pulls/$pr/reviews" \
+              --jq '.[] | select((.body // "") != "" and (.user.type != "Bot" or .submitted_at > env.SINCE)) | "\n### \(.user.login) (\(.state))\n\n\(.body)\n"'
             echo; echo "## Inline review comments"
-            gh api --paginate "repos/$REPO/pulls/$pr/comments" --jq '.[] | "\n### \(.user.login) on \(.path):\(.line // .original_line)\n\n\(.body)\n"'
+            gh api --paginate "repos/$REPO/pulls/$pr/comments" \
+              --jq '.[] | select(.user.type != "Bot" or .created_at > env.SINCE) | "\n### \(.user.login) on \(.path):\(.line // .original_line)\n\n\(.body)\n"'
             # check runs from Actions carry no text, so a failed test job's reason is only in its log:
             # the 60 lines up to its last ##[error] (the log's real end is post-job cleanup)
             echo; echo "## Failed jobs (log lines up to the error)"
@@ -180,6 +188,15 @@ jobs:
             --max-turns ${{ inputs.max-turns }}
             --allowedTools Bash,Read,Edit,Write,MultiEdit,Glob,Grep,Skill,Task,TodoWrite
 
+      - name: Usage
+        if: always() && steps.claude.outputs.execution_file != ''
+        continue-on-error: true  # usage logging never fails a run
+        uses: ./.agentkit-kit/.github/actions/usage
+        with:
+          execution-file: ${{ steps.claude.outputs.execution_file }}
+          job: implement
+          model: ${{ inputs.model }}
+
       - name: Push and open PR
         env:
           GH_TOKEN: ${{ steps.write.outputs.token }}
@@ -215,7 +232,19 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.write.outputs.token }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+          TRUST: ${{ steps.trust.outcome }}
+          LABEL: ${{ github.event.label.name }}
         run: |
+          # one automatic retry for a failed run (an API, rate-limit or GitHub hiccup): re-add the label that
+          # started it, marked reason:retry, which the next status change clears. A timeout or cancel, an
+          # untrusted author, or a failure of the retry itself goes to a person
+          if [ "$JOB_STATUS" = failure ] && [ "$TRUST" != failure ] \
+            && ! gh issue view "$N" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx reason:retry; then
+            gh issue comment "$N" --repo "$REPO" --body "agentkit: implement run failed ($RUN). Retrying once."
+            if gh issue edit "$N" --repo "$REPO" --remove-label "$LABEL" >/dev/null \
+              && gh issue edit "$N" --repo "$REPO" --add-label "$LABEL" --add-label reason:retry >/dev/null; then exit 0; fi
+          fi
           gh issue comment "$N" --repo "$REPO" --body "agentkit: implement run failed or timed out ($RUN). Needs a human."
           # the kit may not have loaded if the run failed early
           .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error \

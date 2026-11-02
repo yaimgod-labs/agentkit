@@ -2,7 +2,8 @@
 # to status:in-progress while fewer than WIP issues are in flight; mirrors status
 # labels onto the board; closes the linked issue when an agent PR merges into a
 # non-default branch; approves a PR once its Human verification boxes are ticked;
-# on a `/decide accept|reject <why>` PR comment sends the RFC back to the implementer to record it.
+# on a `/decide accept|reject <why>` PR comment sends the RFC back to the implementer to record it;
+# on a person's "Request changes" review sends the PR back to the implementer.
 name: agentkit-dispatch
 
 on:
@@ -13,7 +14,7 @@ on:
         type: string
         default: ""
       wip:
-        description: Max issues in flight (in-progress + review + changes-requested)
+        description: Max agent issues not merged yet (in-progress through approved)
         type: number
         default: 2
       debt-every:
@@ -140,6 +141,37 @@ jobs:
           [ -n "$n" ] || exit 0
           gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx type:rfc || { echo "#$n is not an RFC"; exit 0; }
           .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:changes-requested
+
+      # a person's "Request changes" review: the implementer's fix round reads it with its inline comments
+      - id: reviewer
+        if: github.event_name == 'pull_request_review'
+        continue-on-error: true  # an untrusted reviewer is ignored, not an error
+        uses: ./.agentkit-kit/.github/actions/trusted
+        with:
+          logins: ${{ github.event.review.user.login }}
+          token: ${{ steps.app.outputs.token }}
+          bot: ${{ steps.app.outputs.app-slug }}[bot]
+          require-all: "true"
+
+      - name: Send back on requested changes
+        if: steps.reviewer.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
+          [ -n "$n" ] || exit 0
+          # not a failed round. An implementer already at work has read its feedback: say so instead
+          status=$(gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name | select(startswith("status:"))')
+          case $status in
+            status:review|status:approved|status:needs-verification|status:needs-human)
+              .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:changes-requested ;;
+            status:in-progress|status:changes-requested)
+              gh pr comment "$PR" --repo "$REPO" --body "agentkit: the implementer is already working on this PR and has read its feedback. Request changes again after its next push." ;;
+            *) echo "#$n is at '$status'; nothing to do" ;;
+          esac
 
       - name: List ready issues
         id: ready
