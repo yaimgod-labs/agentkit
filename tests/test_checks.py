@@ -61,5 +61,12 @@ expect("a pending status waits", gate(statuses=[st("jenkins", "pending")])["verd
 expect("a status satisfies a required name", gate(statuses=[st("jenkins", "success")], required=["jenkins"])["verdict"] == "pass")
 r = gate([cr("a", conclusion="failure"), cr("b", status="queued", conclusion=None)])
 expect("failure wins over pending", r["verdict"] == "fail", r)
+# the kit's own checks are required by job name; the caller's job name prefixes them ("review / docs")
+own = ["review (code)", "review (security)", "docs", "integration"]
+r = gate(required=own)
+expect("no checks at all never passes (a conflicted PR gets no runs)", r["verdict"] == "wait" and r["pending"] == own, r)
+expect("a required job name matches its prefixed check run",
+       gate([cr("review / " + n, id=i) for i, n in enumerate(own)], required=own)["verdict"] == "pass")
+expect("a required name matches only a whole job name", gate([cr("review / xdocs")], required=["docs"])["pending"] == ["docs"])
 
 sys.exit(1 if fails else 0)
