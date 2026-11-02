@@ -198,7 +198,8 @@ jobs:
         run: |
           candidates=$(jq -r --arg t " $TRUSTED " '.[] | . as $i | select($t | contains(" \($i.author) ")) | .number' "$RUNNER_TEMP/ready.json")
           for n in $candidates; do
-            open=$(gh api "repos/$REPO/issues/$n/dependencies/blocked_by" --jq '[.[]|select(.state=="open")]|length')
+            # grep -c prints 0 but exits 1 when nothing matches; || true keeps pipefail from failing the step
+            open=$(.agentkit-kit/scripts/blockers.sh "$REPO" "$n" open | grep -c . || true)
             if [ "$open" -gt 0 ]; then echo "#$n blocked by $open open issue(s)"; continue; fi
             .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:in-progress
             echo "promoted #$n"

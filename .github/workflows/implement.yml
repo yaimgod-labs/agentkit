@@ -30,7 +30,56 @@ on:
 permissions: {}
 
 jobs:
+  # new work only: refuse to start while a blocker is open and put the issue back to ready.
+  # Always runs so that `implement` can depend on it; the steps are skipped for a fix round (held stays false).
+  check:
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      held: ${{ steps.blockers.outputs.held || 'false' }}
+    env:
+      REPO: ${{ github.repository }}
+      N: ${{ github.event.issue.number }}
+    steps:
+      - id: write
+        if: github.event.label.name == 'status:in-progress'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-issues: write
+
+      - name: Load agentkit
+        if: github.event.label.name == 'status:in-progress'
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: implement.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+
+      - name: Refuse open blockers
+        id: blockers
+        if: github.event.label.name == 'status:in-progress'
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+        run: |
+          open=$(.agentkit-kit/scripts/blockers.sh "$REPO" "$N" open)
+          if [ -z "$open" ]; then echo "held=false" >>"$GITHUB_OUTPUT"; exit 0; fi
+          list="#${open//$'\n'/, #}"
+          gh issue comment "$N" --repo "$REPO" --body "agentkit: not starting — waiting on ${list}. It goes back to ready and starts when they are done."
+          .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:ready
+          echo "held=true" >>"$GITHUB_OUTPUT"
+
   implement:
+    needs: check
+    if: needs.check.outputs.held != 'true'
     # private repos use the self-hosted runner once AGENTKIT_RUNNER is set; public repos never do
     runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
