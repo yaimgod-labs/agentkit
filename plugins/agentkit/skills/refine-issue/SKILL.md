@@ -16,7 +16,7 @@ On a re-run the latest comments are a person's answers to your earlier questions
    - **status**: `ready` only when size is `xs` or `s`, every acceptance criterion is verifiable, and no question blocks the work. Otherwise `needs-info`. For `m` or `l`, say it must be split first and propose the split (a person can then comment `/plan`).
 3. Never contradict an accepted record in `docs/decisions/`. If the issue requires it, that is a blocking question.
 
-Your final message becomes a comment on the issue, so write it for the person who will answer, in this shape only:
+Your final message is posted, as it is, as a comment on the issue, so write it for the person who will answer, start directly with `## Plan` (no preface, no note about who applies it), in this shape only:
 
 ```
 ## Plan

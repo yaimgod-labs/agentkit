@@ -9,6 +9,7 @@ echo "shellcheck: ok"
 tests/test_guard.sh
 tests/test_set_status.sh
 tests/test_checklist.sh
+tests/test_upgrade.sh
 python3 tests/test_marketplace.py
 python3 tests/test_docs.py
 python3 tests/test_caller.py

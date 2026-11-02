@@ -201,13 +201,17 @@ apply_templates() {
     if [ -e "$rel" ]; then SKIPPED+=("$rel"); continue; fi
     mkdir -p "$(dirname "$rel")" && cp -p "$f" "$rel" && fill "$repo" <"$f" >"$rel" && ADDED+=("$rel")  # cp keeps the mode
   done < <(find "$KIT/templates" -type f | sort)
+  # older names this project uses for this kit's marketplace (same repo, another key); renamed to `agentkit`
+  OLD_MKTS=""
+  if [ -f .claude/settings.json ]; then
+    OLD_MKTS=$(jq -r --arg kit "$KIT_REPO" '(.extraKnownMarketplaces // {}) | to_entries[]
+      | select(.value.source.repo == $kit and .key != "agentkit") | .key' .claude/settings.json)
+  fi
   # merge the plugin into an existing .claude/settings.json instead of skipping it
   if printf '%s\n' ${SKIPPED[@]+"${SKIPPED[@]}"} | grep -qx .claude/settings.json; then
-    # an older name for this kit's marketplace (same repo) is renamed to the template's, plugins included
-    jq -s --arg kit "$KIT_REPO" '.[0] as $p | .[1] as $t
-      | [($p.extraKnownMarketplaces // {}) | to_entries[] | select(.key as $k | .value.source.repo == $kit and ($t.extraKnownMarketplaces | has($k) | not)) | .key] as $old
-      | $p | .extraKnownMarketplaces |= with_entries(select(.key as $k | $old | index($k) | not))
-      | .enabledPlugins |= with_entries(.key |= (split("@") as $s | if ($old | index($s[1])) then "\($s[0])@agentkit" else . end))
+    jq -s --arg old "$OLD_MKTS" '($old | split("\n") | map(select(. != ""))) as $o | .[1] as $t | .[0]
+      | .extraKnownMarketplaces |= with_entries(select(.key as $k | $o | index($k) | not))
+      | .enabledPlugins |= with_entries(.key |= (split("@") as $s | if ($o | index($s[1])) then "\($s[0])@agentkit" else . end))
       | . * $t' .claude/settings.json <(fill "$repo" <"$KIT/templates/.claude/settings.json") >.claude/settings.json.new
     if cmp -s .claude/settings.json.new .claude/settings.json; then rm .claude/settings.json.new
     else mv .claude/settings.json.new .claude/settings.json && ADDED+=(".claude/settings.json (merged)"); fi
@@ -252,6 +256,16 @@ EOF
 
 # ---- upgrade ----------------------------------------------------------------
 
+# the file edits of an upgrade, in the current checkout (no network): kit files, caller merge, renames
+sync_checkout() {
+  local repo=$1 caller=.github/workflows/agentkit.yml o
+  apply_templates "$repo"  # adds the caller itself when the repo has none
+  if ! printf '%s\n' ${ADDED[@]+"${ADDED[@]}"} | grep -qx "$caller"; then
+    python3 "$HERE/caller.py" <(fill "$repo" <"$KIT/templates/$caller") "$caller" >"$caller.new" && mv "$caller.new" "$caller"
+    for o in $OLD_MKTS; do sed -i.bak -E "s/@$o([[:space:]]*)\$/@agentkit\1/" "$caller" && rm "$caller.bak"; done
+  fi
+}
+
 cmd_upgrade() {
   local repo=${1:?owner/repo}
   setup_labels "$repo"
@@ -263,10 +277,7 @@ cmd_upgrade() {
   local branch; branch=agentkit/upgrade-$(date -u +%Y%m%d%H%M)
   git switch -q -c "$branch"
   local caller=.github/workflows/agentkit.yml
-  apply_templates "$repo"  # adds the caller itself when the repo has none
-  if ! printf '%s\n' ${ADDED[@]+"${ADDED[@]}"} | grep -qx "$caller"; then
-    python3 "$HERE/caller.py" <(fill "$repo" <"$KIT/templates/$caller") "$caller" >"$caller.new" && mv "$caller.new" "$caller"
-  fi
+  sync_checkout "$repo"
   git add -A
   if git diff --cached --quiet; then say "caller and kit files already up to date — no PR"; return; fi
   git commit -q -m "chore: upgrade agentkit" -m "Syncs the caller workflow with the kit template and adds kit files this repo lacks."
@@ -344,6 +355,9 @@ cmd_doctor() {
   gh api "repos/$repo/branches/$def/protection" >/dev/null 2>&1 && ok "$def is protected" || warn "$def is not protected (merging stays manual)"
   [ $fail -eq 0 ] && echo "all checks passed" || { echo "some checks failed"; return 1; }
 }
+
+# sourced (tests): define the functions only
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 
 case ${1:-} in
   app-create) shift; cmd_app_create "$@";;
