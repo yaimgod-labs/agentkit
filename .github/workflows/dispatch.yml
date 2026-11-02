@@ -1,4 +1,4 @@
-# Dispatcher: promotes the top unblocked status:ready issue (not mode:human, not size:m/l; one type:debt in every debt-every)
+# Dispatcher: promotes the top unblocked status:ready issue (not mode:human, not size:m/l; one debt-label issue in every debt-every)
 # to status:in-progress while fewer than WIP issues are in flight; mirrors status
 # labels onto the board; closes the linked issue when an agent PR merges into a
 # non-default branch; approves a PR once its Human verification boxes are ticked;
@@ -17,9 +17,13 @@ on:
         type: number
         default: 2
       debt-every:
-        description: Take one type:debt issue in every N issues (0 = debt is ranked like any other issue)
+        description: Take one debt-label issue in every N issues (0 = debt is ranked like any other issue)
         type: number
         default: 4
+      debt-label:
+        description: The label that marks tech debt for debt-every
+        type: string
+        default: type:debt
     secrets:
       AGENTKIT_APP_KEY:
         required: true
@@ -76,7 +80,7 @@ jobs:
             status:review) echo Review;; status:changes-requested) echo "Changes requested";; status:approved) echo Approved;;
             status:blocked) echo Blocked;; status:needs-human) echo "Needs human";;
             status:refining) echo Refining;; status:needs-info) echo "Needs info";;
-            status:needs-device-check) echo "Needs device check";; esac)
+            status:needs-verification) echo "Needs verification";; esac)
           [ -n "$stage" ] || exit 0
           pid=$(gh project view "$PROJECT" --owner "$OWNER" --format json --jq .id)
           item=$(gh project item-add "$PROJECT" --owner "$OWNER" --url "$ISSUE_URL" --format json --jq .id)
@@ -107,7 +111,7 @@ jobs:
         run: |
           n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
           [ -n "$n" ] || exit 0
-          gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx status:needs-device-check || exit 0
+          gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx status:needs-verification || exit 0
           read -r unmet human < <(printf '%s\n' "$BODY" | .agentkit-kit/scripts/checklist.sh)
           echo "#$n: $unmet unmet, $human human item(s) left"
           if [ "$unmet" -eq 0 ] && [ "$human" -eq 0 ]; then .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:approved; fi
@@ -144,6 +148,7 @@ jobs:
           REPO: ${{ github.repository }}
           WIP: ${{ inputs.wip }}
           EVERY: ${{ inputs.debt-every }}
+          DEBT: ${{ inputs.debt-label }}
         run: |
           inflight=0
           for l in status:in-progress status:review status:changes-requested; do
@@ -158,19 +163,19 @@ jobs:
           due=false
           if [ "$EVERY" -gt 0 ]; then
             recent=$( { gh api "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select(.pull_request | not) | [.labels[].name]
-                          | select(any(. == "status:in-progress" or . == "status:review" or . == "status:changes-requested" or . == "status:approved" or . == "status:needs-device-check"))
-                          | index("type:debt") != null'
+                          | select(any(. == "status:in-progress" or . == "status:review" or . == "status:changes-requested" or . == "status:approved" or . == "status:needs-verification"))
+                          | any(. == env.DEBT)'
                         gh api "repos/$REPO/issues?state=closed&sort=updated&direction=desc&per_page=50" \
-                          --jq '[.[] | select((.pull_request | not) and .state_reason == "completed")] | sort_by(.closed_at) | reverse | .[] | [.labels[].name] | index("type:debt") != null'
+                          --jq '[.[] | select((.pull_request | not) and .state_reason == "completed")] | sort_by(.closed_at) | reverse | .[] | [.labels[].name] | any(. == env.DEBT)'
                       } | awk -v n=$((EVERY - 1)) 'NR <= n')  # awk, not head: reads all input, so no SIGPIPE under pipefail
             grep -qx true <<<"$recent" || due=true
           fi
           echo "debt due: $due"
           gh api --paginate "repos/$REPO/issues?state=open&labels=status:ready&per_page=100" \
-            | jq -cs --argjson due "$due" --argjson every "$EVERY" '[.[][] | select(.pull_request | not) | {number, author: .user.login, l: [.labels[].name]}
+            | jq -cs --argjson due "$due" --argjson every "$EVERY" --arg debt "$DEBT" '[.[][] | select(.pull_request | not) | {number, author: .user.login, l: [.labels[].name]}
                    # only agent work small enough for one PR: mode:human is for people, size:m/l must be split first
                    | select(.l | any(. == "mode:human" or . == "size:m" or . == "size:l") | not)
-                   | {number, author, d: ($every > 0 and ((.l | index("type:debt") != null) != $due)),
+                   | {number, author, d: ($every > 0 and ((.l | index($debt) != null) != $due)),
                       p: (.l | if index("priority:high") then 0 elif index("priority:medium") then 1 elif index("priority:low") then 2 else 3 end)}]
                   | sort_by(.d, .p, .number)' >"$RUNNER_TEMP/ready.json"
           echo "authors=$(jq -r '[.[].author] | unique | join(" ")' "$RUNNER_TEMP/ready.json")" >>"$GITHUB_OUTPUT"

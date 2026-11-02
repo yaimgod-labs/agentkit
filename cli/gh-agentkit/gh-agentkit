@@ -19,7 +19,7 @@ LABELS=(
   "status:approved|0b6623|All checks green; waiting for a human merge"
   "status:blocked|b60205|Waiting on something outside the repo"
   "status:needs-human|5319e7|Automation stopped; a human must act"
-  "status:needs-device-check|bfd4f2|Checks green; a person must verify the Human verification items"
+  "status:needs-verification|bfd4f2|Checks green; a person must verify the Human verification items"
   "size:xs|ededed|Under an hour, one file"
   "size:s|ededed|One PR, at most a day"
   "size:m|ededed|Several PRs; split before work"
@@ -32,7 +32,7 @@ LABELS=(
   "reason:flaky|e99695|Handed over: flaky tests or CI"
   "reason:too-big|e99695|Handed over: too big for one PR"
   "reason:agent-error|e99695|Handed over: the agent failed or timed out"
-  "reason:device|e99695|Handed over: needs a real device"
+  "reason:manual-check|e99695|Handed over: needs a check only a person can do (hardware, a real account, …)"
   "type:feature|a2eeef|New capability"
   "type:bug|d73a4a|Something is broken"
   "type:chore|cfd3d7|Infra, tooling, maintenance"
@@ -44,7 +44,10 @@ LABELS=(
   "priority:medium|fbca04|Normal"
   "priority:low|c2e0c6|When there is room"
 )
-STAGES="Backlog,Refining,Needs info,Ready,In progress,Review,Changes requested,Needs device check,Approved,Blocked,Needs human,Done"
+# labels and Stage options a release renamed (old|new); upgrade renames them in place, so issues and cards keep them
+RENAMED_LABELS=("status:needs-device-check|status:needs-verification" "reason:device|reason:manual-check")
+RENAMED_STAGES='{"Needs device check": "Needs verification"}'
+STAGES="Backlog,Refining,Needs info,Ready,In progress,Review,Changes requested,Needs verification,Approved,Blocked,Needs human,Done"
 CHECKS=("review / review (code)" "review / review (security)" "review / integration")
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -159,6 +162,12 @@ cmd_setup() {
 
 setup_labels() {
   say "labels"
+  local r have; have=$(gh label list --repo "$1" --limit 500 --json name --jq '.[].name')
+  for r in "${RENAMED_LABELS[@]}"; do
+    if grep -qxF "${r%%|*}" <<<"$have" && ! grep -qxF "${r#*|}" <<<"$have"; then
+      gh label edit "${r%%|*}" --repo "$1" --name "${r#*|}" >/dev/null && say "labels: renamed ${r%%|*} → ${r#*|}"
+    fi
+  done
   for l in "${LABELS[@]}"; do
     IFS='|' read -r name color desc <<<"$l"
     gh label create "$name" --repo "$1" --color "$color" --description "$desc" --force >/dev/null
@@ -181,14 +190,14 @@ setup_board() {
   fid=$(gh project field-list "$num" --owner "$owner" --format json --jq '.fields[]|select(.name=="Stage").id')
   opts=$(gh api graphql -f query='query($id:ID!){node(id:$id){... on ProjectV2SingleSelectField{options{id name color description}}}}' \
     -f id="$fid" --jq .data.node.options)
-  merged=$(jq -c --arg want "$STAGES" '($want | split(",")) as $w | . as $have
+  merged=$(jq -c --arg want "$STAGES" --argjson ren "$RENAMED_STAGES" 'map(.name) as $names | map($ren[.name] as $new | if $new and ($names | index($new) | not) then .name = $new else . end) | ($want | split(",")) as $w | . as $have
     | ($have + [$w[] | select(. as $n | $have | map(.name) | index($n) | not) | {name: ., color: "GRAY", description: ""}])
     | sort_by(.name as $n | $w | index($n) // 999)' <<<"$opts")
-  if [ "$(jq length <<<"$merged")" -gt "$(jq length <<<"$opts")" ]; then
+  if [ "$merged" != "$(jq -c --arg want "$STAGES" '($want | split(",")) as $w | sort_by(.name as $n | $w | index($n) // 999)' <<<"$opts")" ]; then
     jq -n --argjson o "$merged" --arg id "$fid" '{variables: {id: $id, o: $o},
       query: "mutation($id:ID!,$o:[ProjectV2SingleSelectFieldOptionInput!]){updateProjectV2Field(input:{fieldId:$id,singleSelectOptions:$o}){clientMutationId}}"}' \
       | gh api graphql --input - >/dev/null
-    say "board: added stages $(jq -r --argjson have "$opts" '[.[] | select(.id == null) | .name] | join(", ")' <<<"$merged")"
+    say "board: stages now $(jq -r 'map(.name) | join(", ")' <<<"$merged")"
   fi
   say "board: https://github.com/orgs/$owner/projects/$num (group by Stage)"
 }

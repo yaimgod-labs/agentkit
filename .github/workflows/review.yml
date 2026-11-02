@@ -379,7 +379,7 @@ jobs:
             # a push (a person's, too) re-gates an approved PR
             if [ "$EVENT" = pull_request ] && [ "$sha" != "$EVENT_SHA" ]; then return 0; fi
             local ok=status:review
-            [ "$EVENT" != pull_request ] || ok='status:(review|approved|needs-device-check)'
+            [ "$EVENT" != pull_request ] || ok='status:(review|approved|needs-verification)'
             gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qxE "$ok" || return 0
             set_status() { .agentkit-kit/scripts/set-status.sh "$REPO" "$n" "$@"; }
             files=$(gh api --paginate "repos/$REPO/pulls/$pr/files" --jq '.[].filename')
@@ -413,7 +413,7 @@ jobs:
                 return 0 ;;
               pass)
                 if [ "$human" -gt 0 ]; then
-                  set_status status:needs-device-check
+                  set_status status:needs-verification
                   gh pr comment "$pr" --repo "$REPO" --body "agentkit: all checks passed. $human item(s) under **Human verification** need a person: check them (on a device, a staging build or wherever the item says) and tick the boxes in the PR description; ticking the last one approves the PR."
                   return 0
                 fi

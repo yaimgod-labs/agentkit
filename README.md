@@ -7,23 +7,23 @@ Turns a GitHub repo into an agent-driven project. Tasks are issues; status is a 
 ```
 backlog ──(you)──▶ refining ──refine──▶ ready ──dispatch──▶ in-progress ──implement──▶ review ──gate──▶ approved ──(you merge)──▶ closed
                       │   ▲               ▲                     ▲                    │    │
-                      ▼   │ (you answer)  │ (you, skipping      └─ changes-requested ┘    └─▶ needs-device-check ──(you tick)──▶ approved
+                      ▼   │ (you answer)  │ (you, skipping      └─ changes-requested ┘    └─▶ needs-verification ──(you tick)──▶ approved
                    needs-info             │  refine)                after 3 failed rounds ▶ needs-human + reason:*
 ```
 
 | Step | Trigger | What runs |
 |---|---|---|
 | refine | `status:refining`, or your comment on a `status:needs-info` issue | Claude (read-only) posts a plan, criteria and questions; the workflow sets `size:*`, `type:*`, `mode:*` and moves the issue to `ready` (size xs/s, nothing unclear) or `needs-info` (assigned to you) |
-| dispatch | every 30 min, any `status:*` label, PR merged or edited | promotes the top unblocked `ready` issue (priority, then oldest; skips `mode:human`, `size:m`, `size:l`) while in-flight < WIP (default 2); mirrors labels to the board's **Stage** field; approves a `needs-device-check` PR once its Human verification boxes are all ticked |
+| dispatch | every 30 min, any `status:*` label, PR merged or edited | promotes the top unblocked `ready` issue (priority, then oldest; skips `mode:human`, `size:m`, `size:l`) while in-flight < WIP (default 2); mirrors labels to the board's **Stage** field; approves a `needs-verification` PR once its Human verification boxes are all ticked |
 | implement | `status:in-progress` or `status:changes-requested` | Claude (implementer) commits on `agent/<n>-<slug>`; the workflow pushes, opens the PR (`Closes #n`), sets `status:review` |
 | review | PR opened / pushed / ready for review | in parallel: `review (code)`, `review (security)` — fresh Claude sessions, read-only — `docs`, and `integration` (`.agentkit/test.sh`, or each changed `suite`) |
-| gate | after the checks; again on other CI apps' results and every 30 min | every check run and commit status on the PR's head commit counts, other CI included; all green → `status:approved` (auto-merge only if repo var `AUTO_MERGE=true`), or `status:needs-device-check` while the PR has unticked items under `## Human verification`; otherwise back to the implementer, max 3 rounds |
+| gate | after the checks; again on other CI apps' results and every 30 min | every check run and commit status on the PR's head commit counts, other CI included; all green → `status:approved` (auto-merge only if repo var `AUTO_MERGE=true`), or `status:needs-verification` while the PR has unticked items under `## Human verification`; otherwise back to the implementer, max 3 rounds |
 | plan | `/plan` comment on an issue | the issue becomes an epic with sub-issues, all `status:backlog` |
-| digest | daily, 07:00 UTC | lists what waits on you (needs-info, needs-human, needs-device-check, approved, blocked), least recently updated first, in Slack and the run summary; nothing waiting, no post |
-| retro | weekly, Monday 08:00 UTC | counts the week (cycle time, fix rounds, handover reasons, debt share); a read-only Claude reads the issues behind them and proposes at most 3 changes; posted as a Discussion (category input, default General) |
+| digest | daily, 07:00 UTC | lists open issues per label in its `statuses` input (default: needs-info, needs-human, needs-verification, approved, blocked), least recently updated first, in Slack and the run summary; nothing waiting, no post |
+| retro | weekly, Monday 08:00 UTC | counts the week (cycle time, fix rounds, handover reasons, debt share); a read-only Claude reads the issues behind them and proposes at most 3 changes; posted as a Discussion (`category`, default General; `days`, default 7) |
 | decide | `/decide accept <why>` or `/decide reject <why>` on an RFC's PR, by someone with write access | the issue goes back to the implementer, which sets the RFC's status and writes the decision record; the review checks both against your comment |
 
-Every handover to `needs-human` also sets one `reason:*` label (`unclear-spec`, `env`, `flaky`, `too-big`, `agent-error`, `device`); the next status change clears it. Labels go through `scripts/set-status.sh`, which keeps exactly one `status:*`.
+Every handover to `needs-human` also sets one `reason:*` label (`unclear-spec`, `env`, `flaky`, `too-big`, `agent-error`, `manual-check`); the next status change clears it. Labels go through `scripts/set-status.sh`, which keeps exactly one `status:*`.
 
 Guardrails: every write uses the `agentkit-bot` App token (so events chain); Claude itself gets a downscoped token and cannot push. Only issues and comments by people with write access to the repo (or by agentkit itself) are acted on. Fork PRs never get secrets. Private repos use the self-hosted runner once `AGENTKIT_RUNNER` is set; public repos always use GitHub-hosted runners. Plugin hooks block pushes to main, force pushes, `reset --hard`, and edits outside the worktree.
 
@@ -44,7 +44,9 @@ Guardrails: every write uses the `agentkit-bot` App token (so events chain); Cla
 
 Then fill in **Commands** in `CLAUDE.md` and `.agentkit/test.sh`, and run `gh agentkit doctor <owner/repo>`.
 
-Tech debt: label it `type:debt` (or let refine). The dispatcher takes one debt issue in every 4 it starts (`debt-every` on the dispatch job; 0 ranks debt like anything else).
+Tech debt: label it `type:debt` (or let refine). The dispatcher takes one debt issue in every 4 it starts (`debt-every` on the dispatch job; 0 ranks debt like anything else; `debt-label` uses another label).
+
+Per project, all of this is set in the caller: the crons under `schedule:`, and the labels, headings, counts and category as `with:` inputs (commented examples in the template). `gh agentkit upgrade` keeps both.
 
 Dependencies: `.github/dependabot.yml` (added by `init`/`upgrade`) opens weekly update PRs for GitHub Actions; add your package managers. They get the same review jobs and never auto-merge. Dependabot's runs only see Dependabot secrets, so also add `AGENTKIT_APP_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` under **Settings → Secrets and variables → Dependabot**.
 
@@ -73,7 +75,7 @@ Release flow:
 2. Run `scripts/canary.sh`. It files a known issue on scratch and waits until the issue reaches `status:approved` (pass) or `status:needs-human` (fail).
 3. Only after a pass: tag `v1.x.y` and move `v1` to it. Projects pick it up on their next run.
 
-When a release adds labels, caller jobs or board stages, run `gh agentkit upgrade <owner/repo>` for each project: it adds the labels and the missing **Stage** options (cards keep their stage), and opens one PR that syncs the caller with the template, keeping the project's `with:` settings, `@ref` pins and extra jobs. `gh agentkit doctor` warns about missing stages.
+When a release adds labels, caller jobs or board stages, run `gh agentkit upgrade <owner/repo>` for each project: it adds the labels and the missing **Stage** options (cards keep their stage), and renames labels and stages a release renamed (issues and cards keep them; e.g. `status:needs-device-check` → `status:needs-verification`), and opens one PR that syncs the caller with the template, keeping the project's `with:` settings, `@ref` pins and extra jobs. `gh agentkit doctor` warns about missing stages.
 
 ## Monorepos and other CI
 

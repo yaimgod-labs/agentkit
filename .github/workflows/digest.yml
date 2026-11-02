@@ -1,5 +1,4 @@
-# Daily digest: what waits on a person (needs-info, needs-human, needs-device-check, approved, blocked),
-# least recently updated first, posted to Slack (SLACK_WEBHOOK_URL) and the run summary. Nothing waiting, no post.
+# Daily digest: open issues that wait on a person (the `statuses` input), least recently updated first, posted to Slack (SLACK_WEBHOOK_URL) and the run summary. Nothing waiting, no post.
 name: agentkit-digest
 
 on:
@@ -9,6 +8,15 @@ on:
         description: Unused (the digest loads nothing from the kit); accepted so every kit job takes the same pin
         type: string
         default: ""
+      statuses:
+        description: One `label|heading` per line; each label's open issues become a section, in this order
+        type: string
+        default: |
+          status:needs-info|Needs your answer
+          status:needs-human|Handed over to you
+          status:needs-verification|Needs your verification
+          status:approved|Approved, waiting for your merge
+          status:blocked|Blocked
     secrets:
       AGENTKIT_APP_KEY:
         required: true
@@ -34,14 +42,15 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
           SLACK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          STATUSES: ${{ inputs.statuses }}
         run: |
           text=""
-          for s in "needs-info|Needs your answer" "needs-human|Handed over to you" "needs-device-check|Needs a device check" \
-                   "approved|Approved, waiting for your merge" "blocked|Blocked"; do
-            items=$(gh issue list --repo "$REPO" --state open --label "status:${s%%|*}" --limit 50 --json number,title,url,updatedAt,labels \
+          while IFS='|' read -r label heading; do
+            [ -n "$label" ] || continue
+            items=$(gh issue list --repo "$REPO" --state open --label "$label" --limit 50 --json number,title,url,updatedAt,labels \
               --jq 'sort_by(.updatedAt)[] | "• <\(.url)|#\(.number)> \(.title | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;")) — last update \(.updatedAt[:10])\([.labels[].name | select(startswith("reason:"))] | if length > 0 then " (\(join(", ")))" else "" end)"')
-            if [ -n "$items" ]; then text+="*${s#*|}*"$'\n'"$items"$'\n\n'; fi
-          done
+            if [ -n "$items" ]; then text+="*${heading:-$label}*"$'\n'"$items"$'\n\n'; fi
+          done <<<"$STATUSES"
           if [ -z "$text" ]; then echo "nothing waits on a person"; exit 0; fi
           text="*agentkit digest — $REPO*"$'\n\n'"$text"
           printf '%s\n' "$text" >>"$GITHUB_STEP_SUMMARY"

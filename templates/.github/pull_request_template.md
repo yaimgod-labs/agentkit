@@ -6,4 +6,4 @@ Closes #
 <!-- one line per criterion: test name, command output or file:line -->
 
 ## Human verification
-<!-- unticked boxes here wait for a person (status:needs-device-check); ticking the last one approves -->
+<!-- unticked boxes here wait for a person (status:needs-verification); ticking the last one approves -->
