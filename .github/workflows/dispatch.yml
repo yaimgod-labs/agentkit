@@ -150,8 +150,10 @@ jobs:
           EVERY: ${{ inputs.debt-every }}
           DEBT: ${{ inputs.debt-label }}
         run: |
+          # in flight = every agent issue not merged yet: PRs waiting on a person count too, so the agents never
+          # stack up more PRs than people merge (each one waiting goes stale against the base)
           inflight=0
-          for l in status:in-progress status:review status:changes-requested; do
+          for l in status:in-progress status:review status:changes-requested status:needs-verification status:approved; do
             c=$(gh issue list --repo "$REPO" --state open --label "$l" --json number --jq length)
             inflight=$((inflight + c))
           done
