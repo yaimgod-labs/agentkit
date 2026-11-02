@@ -270,7 +270,7 @@ cmd_upgrade() {
   gh pr create --repo "$repo" --base "$def" --head "$branch" --title "chore: upgrade agentkit ($kit_ref)" --body "$(cat <<EOF
 Syncs this repo with agentkit $kit_ref. Labels and board stages are already updated.
 
-- \`$caller\`: triggers and kit jobs from the template; this repo's \`with:\` blocks, \`uses:\` refs and extra jobs kept
+- \`$caller\`: triggers and kit jobs from the template; the project \`with:\` blocks, \`uses:\` refs and extra jobs kept
 $( [ ${#ADDED[@]} -gt 0 ] && printf -- '- `%s` added\n' "${ADDED[@]}")
 
 Review the caller diff, then merge. Existing files other than the caller and \`.claude/settings.json\` are never changed.
