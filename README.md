@@ -128,6 +128,19 @@ Both run through the normal lifecycle (refine → implement → review); the age
 
 A failed `docs` job fails the review round like any other check and posts what to fix on the PR; the implementer gets it in its fix-round feedback. Repos without `docs/` skip all of it. Search is the `find-knowledge` skill (docs index → decisions → `rg` → repowise when available → issues, PRs, Discussions).
 
+### Agent context
+
+Everything an agent loads on every session costs attention, so it stays short:
+
+| What | Where | Loaded |
+|---|---|---|
+| facts and hard rules: what the project is, layout, commands, rules | `CLAUDE.md` (root, plus one per folder with its own rules) | always (a folder's when working there) |
+| rules for part of the tree | `.claude/rules/*.md` with `paths:` | when those paths are touched |
+| procedures (release, migrations, …) | skills: agentkit's, plus the project's in `.claude/skills/` | when used |
+| explanations, designs, decisions | `docs/` | searched (`find-knowledge`), never preloaded |
+
+`docs.py check` (CI `docs` job and the Stop hook) fails any `CLAUDE.md` or `.claude/rules/*.md` over its line budget: 150 lines, or what the file sets with `<!-- agentkit: max-lines N -->` (the template's root file says 120). When review keeps catching the same mistake, the weekly retro proposes the one line to add.
+
 ## Models, plugins and skills
 
 - **Model:** each workflow takes `model` (default `claude-opus-5-5`), passed to Claude as `--model`. A change in the action's default model can never change agent behaviour silently.

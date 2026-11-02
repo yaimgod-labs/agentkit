@@ -250,7 +250,7 @@ jobs:
           RUN: ${{ matrix.suite.run }}
         run: bash -c "$RUN"
 
-  # docs/ consistency: schema, links, index, and docs whose `covers` code changed (see scripts/docs.py)
+  # docs/ consistency: schema, links, index, docs whose `covers` code changed, CLAUDE.md line budgets (see scripts/docs.py)
   docs:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -302,7 +302,6 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           BASE: ${{ github.event.pull_request.base.ref }}
         run: |
-          if [ ! -d docs ]; then echo "no docs/ — skipped"; exit 0; fi
           k=.agentkit-kit/plugins/agentkit/scripts/docs.py
           gh pr view "$PR" --repo "$REPO" --json body --jq .body >"$RUNNER_TEMP/body.md"
           rc=0
