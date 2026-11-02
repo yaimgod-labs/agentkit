@@ -29,6 +29,7 @@ check "open blockers" "$mixed" open "3 "
 check "dropped blockers" "$mixed" dropped "5 "
 check "no blockers, open" '[]' open ""
 check "no blockers, dropped" '[]' dropped ""
+check "dropped blockers with titles" '[{"number":5,"title":"Old idea","state":"closed","state_reason":"duplicate"},{"number":3,"title":"Live","state":"open"}]' dropped-titles "5 Old idea "
 # A closed blocker with no state_reason (null) was not completed, so it counts as dropped.
 check "closed without reason is dropped" '[{"number":6,"state":"closed","state_reason":null}]' dropped "6 "
 test_blockers_cross_repo() {

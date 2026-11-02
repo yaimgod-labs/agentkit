@@ -4,7 +4,9 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-# The fake gh logs every call; `api` applies the --jq filter to $FAKE_JSON with real jq, `issue view` lists $FAKE_LABELS.
+# The fake gh logs every call. `api` applies the --jq filter with real jq to $FAKE_COMMENTS (default []) for an
+# issue's comments and to $FAKE_JSON for anything else; an endpoint containing $FAKE_FAIL fails like an API error.
+# `issue view` lists $FAKE_LABELS.
 cat >"$tmp/gh" <<'EOF2'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG"
@@ -13,12 +15,14 @@ case "$1 $2" in
   "issue comment"|"issue edit") ;;
   *)
     [ "$1" = api ] || exit 1
-    filter=.
+    filter=. ep=
     while [ $# -gt 0 ]; do
-      if [ "$1" = --jq ]; then filter=$2; fi
+      case "$1" in --jq) filter=$2; shift ;; repos/*) ep=$1 ;; esac
       shift
     done
-    printf '%s' "$FAKE_JSON" | jq -r "$filter" ;;
+    if [ -n "${FAKE_FAIL:-}" ]; then case "$ep" in *"$FAKE_FAIL"*) echo "HTTP 502: Bad Gateway" >&2; exit 1 ;; esac; fi
+    case "$ep" in */comments*) json=${FAKE_COMMENTS:-[]} ;; *) json=$FAKE_JSON ;; esac
+    printf '%s' "$json" | jq -r "$filter" ;;
 esac
 EOF2
 chmod +x "$tmp/gh"
@@ -51,7 +55,7 @@ ok "already blocked: no label removed" nolog '--remove-label'
 out=$(FAKE_JSON='[]' "$here/../scripts/drop-dependency.sh" o/r 3 "Old idea")
 ok "no dependents prints nothing" [ -z "$out" ]
 ok "no dependents writes nothing" nolog '^issue '
-# A dependent in another repo is never addressed by its bare number here (test_drop_dependency_cross_repo);
+# A dependent in another repo is never addressed by its bare number here (the "cross-repo:" checks);
 # the repo compares case-insensitively, and the skip is logged on stderr only.
 : >"$FAKE_LOG"
 out=$(FAKE_JSON='[{"number":9,"state":"open","repository_url":"https://api.github.com/repos/x/y"},{"number":7,"state":"open","repository_url":"https://api.github.com/repos/O/R"}]' \
@@ -62,4 +66,34 @@ ok "cross-repo: nothing edited on 9" nolog '^issue edit 9 '
 ok "cross-repo: nothing viewed on 9" nolog '^issue view 9 '
 ok "cross-repo: same repo in other case still handled" count '^issue comment 7 ' 1
 ok "cross-repo: skip logged on stderr" grep -qx 'skip x/y#9: other repo' "$tmp/err"
+# A dependent that already has the block comment for this blocker is skipped: a retry or a re-close never posts
+# twice, and a person's `/board unblock` sticks.
+: >"$FAKE_LOG"
+out=$(FAKE_COMMENTS='[{"body":"<!-- agentkit:block -->\n**Blocked:** dropped dependency: #3 (Old idea)"}]' \
+  FAKE_JSON='[{"number":7,"state":"open","repository_url":"https://api.github.com/repos/o/r"}]' "$here/../scripts/drop-dependency.sh" o/r 3 "Old idea")
+ok "already commented: not printed" [ -z "$out" ]
+ok "already commented: no second comment" nolog '^issue comment 7 '
+ok "already commented: status left alone" nolog '^issue edit 7 '
+# A comment for another blocker (#30) does not count for #3.
+: >"$FAKE_LOG"
+out=$(FAKE_COMMENTS='[{"body":"<!-- agentkit:block -->\n**Blocked:** dropped dependency: #30 (Other)"}]' \
+  FAKE_JSON='[{"number":7,"state":"open","repository_url":"https://api.github.com/repos/o/r"}]' "$here/../scripts/drop-dependency.sh" o/r 3 "Old idea")
+ok "comment for #30: 7 still handled" [ "$out" = 7 ]
+# test_drop_dependency_in_flight: a dependent already in work gets the comment only; its status is left to the flow
+for s in in-progress review changes-requested approved needs-verification; do
+  : >"$FAKE_LOG"
+  out=$(FAKE_JSON='[{"number":7,"state":"open","labels":[{"name":"status:'"$s"'"}],"repository_url":"https://api.github.com/repos/o/r"}]' \
+    "$here/../scripts/drop-dependency.sh" o/r 3 "Old idea")
+  ok "in flight ($s): printed" [ "$out" = 7 ]
+  ok "in flight ($s): commented" count '^issue comment 7 ' 1
+  ok "in flight ($s): status not changed" nolog '^issue edit 7 '
+done
+# A failed read stops with non-zero exit before any write (fail closed).
+for ep in dependencies/blocking comments; do
+  : >"$FAKE_LOG"
+  if FAKE_FAIL=$ep FAKE_JSON='[{"number":7,"state":"open","repository_url":"https://api.github.com/repos/o/r"}]' \
+    "$here/../scripts/drop-dependency.sh" o/r 3 "Old idea" >/dev/null 2>&1; then rc=0; else rc=$?; fi
+  ok "api error on $ep: non-zero exit" [ "$rc" != 0 ]
+  ok "api error on $ep: writes nothing" nolog '^issue \(comment\|edit\)'
+done
 exit $fail

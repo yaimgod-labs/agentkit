@@ -10,6 +10,7 @@ tests/test_guard.sh
 tests/test_set_status.sh
 tests/test_blockers.sh
 tests/test_drop_dependency.sh
+tests/test_hold.sh
 tests/test_checklist.sh
 tests/test_upgrade.sh
 python3 tests/test_marketplace.py
