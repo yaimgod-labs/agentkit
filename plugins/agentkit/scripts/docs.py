@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """agentkit docs tooling, one source for CI, the Stop hook and local use.
 
-  docs.py check            front matter schema, `covers` globs match files, relative links resolve
+  docs.py check            front matter schema, `covers` globs match files, relative links resolve,
+                           decided RFCs have a decision record, `supersedes` targets are superseded
   docs.py index [--check]  write docs/README.md (or fail if it is stale)
   docs.py drift BASE [--pr-body FILE]
                            docs whose `covers` code changed since BASE but the doc did not
@@ -88,6 +89,25 @@ def check():
             target = target.split("#")[0]
             if target and not re.match(r"^[a-z][a-z0-9+.-]*:", target) and not (doc.parent / target).exists():
                 errors.append(f"{doc}: broken link `{target}`")
+    return errors + decision_errors()
+
+
+def decision_errors():
+    """An accepted or rejected RFC needs a decision record linking to it; `supersedes` targets must be superseded."""
+    errors, decisions = [], [d for d in docs() if d.parts[1:2] == ("decisions",)]
+    linked = {os.path.normpath(d.parent / t.split("#")[0]) for d in decisions for t in LINK.findall(d.read_text(encoding="utf-8"))}
+    for doc in (d for d in docs() if d.parts[1:2] == ("rfcs",)):
+        status = (front_matter(doc) or {}).get("status")
+        if status in ("accepted", "rejected") and os.path.normpath(doc) not in linked:
+            errors.append(f"{doc}: `{status}` RFC has no decision record in docs/decisions/ linking to it")
+    by_number = {d.name.split("-")[0]: d for d in decisions}
+    for d in decisions:
+        for number in as_list((front_matter(d) or {}).get("supersedes")):
+            target = by_number.get(number)
+            if target is None:
+                errors.append(f"{d}: supersedes {number}, which does not exist")
+            elif (front_matter(target) or {}).get("status") != "superseded":
+                errors.append(f"{d}: supersedes {number}, which is not `status: superseded`")
     return errors
 
 
