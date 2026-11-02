@@ -5,9 +5,11 @@ The dispatcher (`.github/workflows/dispatch.yml`) and the `/board` command both 
 board calls "Up next" is exactly what the dispatcher takes next.
 
   board.py order --debt-due true|false [--debt-every N] [--debt-label L]
-      stdin:  [{"number": 7, "author": "alice", "labels": ["priority:high"], "rank": 2 | null}, ...]
+      stdin:  [{"number": 7, "author": "alice", "labels": ["priority:high"], "rank": 2 | null, "waiting_on": [4]}, ...]
       stdout: the same issues (every field kept), filtered and sorted, as JSON.
-      Dropped: mode:human, size:m, size:l (people's work, and work that must be split first).
+      Dropped: mode:human, size:m, size:l (people's work, and work that must be split first), and an issue whose
+      optional `waiting_on` (its open blockers) is non-empty. /board sends `waiting_on`; the dispatcher does not,
+      because it asks scripts/hold.sh about each candidate in this order instead.
       Sort key: (rank is null, rank, d, p, number)
         rank  the manual `Rank` number on the Projects board; a ranked issue always goes before unranked ones
         d     debt flag: debt-every > 0 and (has the debt label != debt-due), so debt goes first only when it is
@@ -26,11 +28,17 @@ board calls "Up next" is exactly what the dispatcher takes next.
       The window is the first EVERY-1 issues taken into work: the in-flight open ones, then the most recently closed.
       Due when none of them has the debt label. With --every 0 the quota is off and the answer is `false`.
 
+  board.py debt-config <caller.yml>
+      stdout: `<debt-every> <debt-label>` as the dispatcher gets them: the dispatch job's `with:` inputs in the
+      project's caller (.github/workflows/agentkit.yml) when set there, else the defaults `4 type:debt`.
+      A commented line, a missing file and a `${{ }}` expression all give the default.
+
   board.py estimate
       stdin:  {"closed": [{"size": "s", "started_at": ISO, "closed_at": ISO}, ...], "open": [{"number": 7, "size": "s"}, ...]}
       stdout: {"7": "~3h–6h" | "~2–4 days" | default, ...} as JSON.
       Per size, the last 20 closed issues (by closed_at) give cycle times in hours; with 5 or more, the estimate is
-      their 25th–75th percentile ("~Q1h–Q3h", whole hours; "~X–Y days" once Q3 is 24 h or more). Fewer than 5 samples:
+      their 25th–75th percentile ("~Q1h–Q3h", whole hours; "~X–Y days" once Q1 is 24 h or more, "~Xh–Y days" when only
+      Q3 is; "1 day", not "1 days"). Fewer than 5 samples:
       xs "<1h", s "≤1 day", m "several days", l "an epic". An open issue with no size gets no entry.
 
   board.py render
@@ -38,13 +46,18 @@ board calls "Up next" is exactly what the dispatcher takes next.
                            "author": "alice", "block_reasons": ["reason", ...]}, ...],
                "deps": {"7": {"waiting_on": [4], "holds_up": [9]}},   # waiting_on = open blockers, by issue number
                "estimates": {"7": "~3h–6h"},                          # the output of `estimate`
-               "order": {"debt_due": false, "debt_every": 0, "debt_label": "type:debt"}}   # optional, as for `order`
+               "order": {"debt_due": false, "debt_every": 0, "debt_label": "type:debt"},  # optional, as for `order`
+               "warnings": ["..."]}                                    # optional, printed first as `> warning: ...`
       stdout: markdown, one section each for Waiting on you, In progress, Up next (top 5) and Blocked (with the
-      issue's block_reasons), every line `- #n title — stage — estimate — waiting on #b`. An issue is shown
-      once, in the first section it fits. Issues in any other status (backlog, ...) are not shown.
+      issue's block_reasons), every line `- #n title — stage — estimate — waiting on #b — holds up #c, #d`. An issue
+      is shown once, in the first section it fits. Up next is `order` over the ready issues with their waiting_on,
+      so it is the dispatcher's pick order; after it come the ready issues `order` leaves out, as
+      `- Held: #n title — waiting on #b` and `- Not taken: #n title — split first (size:m)` (mode:human ones are under
+      Waiting on you). Issues in any other status (backlog, ...) are not shown.
 """
 import argparse
 import json
+import re
 import statistics
 import sys
 from datetime import datetime
@@ -72,9 +85,45 @@ def sort_key(issue, due, every, debt):
     return (rank is None, rank if rank is not None else 0, d, priority, issue["number"])
 
 
+def not_taken(issue):
+    """The label that keeps the dispatcher from ever taking this issue, or None."""
+    return next((l for l in ("mode:human", "size:m", "size:l") if l in (issue.get("labels") or [])), None)
+
+
 def order(issues, due=False, every=0, debt="type:debt"):
-    kept = [i for i in issues if not any(l in ("mode:human", "size:m", "size:l") for l in i.get("labels") or [])]
+    kept = [i for i in issues if not not_taken(i) and not i.get("waiting_on")]
     return sorted(kept, key=lambda i: sort_key(i, due, every, debt))
+
+
+DEBT_DEFAULTS = (4, "type:debt")
+
+
+def debt_config(path):
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError:
+        return DEBT_DEFAULTS
+    every, label = DEBT_DEFAULTS
+    job = None  # indent of the `dispatch:` job line while inside it
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if job is not None and indent <= job:
+            job = None
+        if job is None:
+            if re.match(r"^\s*dispatch:\s*$", line):
+                job = indent
+            continue
+        m = re.match(r"^\s*(debt-every|debt-label):\s*(.*?)\s*(#.*)?$", line)
+        if not m or "${{" in m.group(2):
+            continue
+        value = m.group(2).strip("'\"")
+        if m.group(1) == "debt-every" and value.isdigit():
+            every = int(value)
+        elif m.group(1) == "debt-label" and value:
+            label = value
+    return every, label
 
 
 def debt_due(doc, every, debt):
@@ -92,9 +141,14 @@ def hours(sample):
 
 
 def span(q1, q3):
+    def days(d):
+        return f"{d} day" if d == 1 else f"{d} days"
     if q3 >= 24:
-        lo, hi = max(1, round(q1 / 24)), max(1, round(q3 / 24))
-        return f"~{lo} days" if lo == hi else f"~{lo}–{hi} days"
+        hi = max(1, round(q3 / 24))
+        if q1 < 24:
+            return f"~{round(q1)}h–{days(hi)}"
+        lo = max(1, round(q1 / 24))
+        return f"~{days(lo)}" if lo == hi else f"~{lo}–{days(hi)}"
     lo, hi = round(q1), round(q3)
     return f"~{lo}h" if lo == hi else f"~{lo}h–{hi}h"
 
@@ -134,15 +188,23 @@ def render(doc):
         parts = [f"#{n} {i.get('title', '')}", STAGE.get(status_of(i).replace("status:", ""), status_of(i) or "No status")]
         if str(n) in est:
             parts.append(est[str(n)])
-        waiting = (deps.get(str(n)) or {}).get("waiting_on") or []
-        if waiting:
-            parts.append("waiting on " + ", ".join(f"#{b}" for b in waiting))
+        if waiting(i):
+            parts.append("waiting on " + refs(waiting(i)))
+        holds = (deps.get(str(n)) or {}).get("holds_up") or []
+        if holds:
+            parts.append("holds up " + refs(holds))
         return "- " + " — ".join(parts)
+
+    def waiting(i):
+        return (deps.get(str(i["number"])) or {}).get("waiting_on") or []
+
+    def refs(numbers):
+        return ", ".join(f"#{b}" for b in numbers)
 
     def has(i, label):
         return label in (i.get("labels") or [])
 
-    ready = [i for i in issues if has(i, "status:ready")]
+    ready = [dict(i, waiting_on=waiting(i)) for i in issues if has(i, "status:ready")]
     ordered = order(ready, bool(o.get("debt_due")), int(o.get("debt_every") or 0), o.get("debt_label") or "type:debt")
     by_number = lambda items: sorted(items, key=lambda i: i["number"])
 
@@ -152,8 +214,14 @@ def render(doc):
     shown |= {i["number"] for i in in_progress}
     up_next = [i for i in ordered if i["number"] not in shown][:UP_NEXT]
     blocked = by_number(i for i in issues if has(i, "status:blocked") and i["number"] not in shown)
+    left_out = [f"- Not taken: #{i['number']} {i.get('title', '')} — split first ({not_taken(i)})"
+                for i in by_number(ready) if not_taken(i) in ("size:m", "size:l")]
+    left_out = [f"- Held: #{i['number']} {i.get('title', '')} — waiting on {refs(i['waiting_on'])}"
+                for i in by_number(ready) if not not_taken(i) and i["waiting_on"]] + left_out
 
-    out = []
+    out = [f"> warning: {w}" for w in doc.get("warnings") or []]
+    if out:
+        out.append("")
     for title, items in (("Waiting on you", waiting_on_you), ("In progress", in_progress), ("Up next", up_next), ("Blocked", blocked)):
         out += [f"## {title}", ""]
         for i in items:
@@ -162,6 +230,8 @@ def render(doc):
                 out += [f"  - {r}" for r in i.get("block_reasons") or []]
         if not items:
             out.append("_none_")
+        if title == "Up next":
+            out += left_out
         out.append("")
     return "\n".join(out)
 
@@ -176,11 +246,17 @@ def main():
     pd = sub.add_parser("debt-due")
     pd.add_argument("--every", type=int, default=0)
     pd.add_argument("--debt-label", default="type:debt")
+    pc = sub.add_parser("debt-config")
+    pc.add_argument("caller")
     sub.add_parser("estimate")
     sub.add_parser("render")
     args = p.parse_args()
 
     sys.stdout.reconfigure(encoding="utf-8")
+    if args.cmd == "debt-config":
+        print("%d %s" % debt_config(args.caller))
+        return
+    sys.stdin.reconfigure(encoding="utf-8")
     doc = json.load(sys.stdin)
     if args.cmd == "order":
         print(json.dumps(order(doc, args.debt_due == "true", args.debt_every, args.debt_label), separators=(",", ":")))

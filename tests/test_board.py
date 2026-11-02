@@ -136,4 +136,85 @@ expect("line has stage and estimate", any(l.startswith("- #13 task 13 — Ready 
 md = run("render", stdin={"issues": [], "deps": {}, "estimates": {}})
 expect("empty board renders", all(h in md for h in ("## Waiting on you", "## In progress", "## Up next", "## Blocked")), md)
 
+# test_order_drops_held: an issue with open blockers (`waiting_on`, sent by /board) is not taken; none sent is today's order
+issues = [issue(1), dict(issue(2, "priority:high"), waiting_on=[9]), dict(issue(3), waiting_on=[])]
+expect("order drops issues waiting on an open blocker", order(issues) == [1, 3], order(issues))
+
+
+def sections(md):
+    sec, cur = {}, None
+    for line in md.splitlines():
+        if line.startswith("## "):
+            cur = line[3:].strip()
+            sec[cur] = []
+        elif cur and line.strip():
+            sec[cur].append(line)
+    return sec
+
+
+# test_render_up_next_matches_dispatch: held and not-taken ready issues are listed apart, after the top 5
+board = {"issues": [issue(n, "status:ready") for n in (1, 2, 3, 4, 5, 6, 7)] + [
+    issue(8, "status:ready", "size:m"), issue(9, "status:ready", "size:l", "priority:high"), issue(10, "status:ready", "mode:human", "size:m")],
+    "deps": {"1": {"waiting_on": [40, 41], "holds_up": []}, "2": {"waiting_on": [], "holds_up": [3]}}, "estimates": {}}
+md = run("render", stdin=board)
+up = sections(md)["Up next"]
+expect("up next skips the held issue", [l for l in up if l.startswith("- #")][:5] == [
+    "- #2 task 2 — Ready — holds up #3", "- #3 task 3 — Ready", "- #4 task 4 — Ready", "- #5 task 5 — Ready", "- #6 task 6 — Ready"], md)
+expect("held issue listed with its blockers", "- Held: #1 task 1 — waiting on #40, #41" in up, md)
+expect("not taken: size m and l, split first", "- Not taken: #8 task 8 — split first (size:m)" in up
+       and "- Not taken: #9 task 9 — split first (size:l)" in up, md)
+expect("mode:human is under Waiting on you, not Not taken", "#10" not in "\n".join(up) and any("#10 " in l for l in sections(md)["Waiting on you"]), md)
+
+# test_render_holds_up
+board = {"issues": [issue(4, "status:in-progress")], "deps": {"4": {"waiting_on": [], "holds_up": [7, 9]}}, "estimates": {}}
+md = run("render", stdin=board)
+expect("holds up its dependents", "- #4 task 4 — In progress — holds up #7, #9" in md, md)
+
+# render warnings go first, one line each
+md = run("render", stdin={"issues": [], "deps": {}, "estimates": {}, "warnings": ["could not read ranks"]})
+expect("warning line first", md.splitlines()[0] == "> warning: could not read ranks", md)
+
+# test_span_wording: one day is "day"; hours below a day and days above it are mixed
+day1 = [sample("s", h) for h in (20, 22, 24, 26, 28)]          # quartiles 22h..26h -> 1 day hi, hours lo
+expect("Q1 under a day, Q3 over: hours to days", est(day1, [{"number": 1, "size": "s"}]) == {"1": "~22h–1 day"}, est(day1, [{"number": 1, "size": "s"}]))
+one = [sample("s", h) for h in (24, 24, 25, 26, 26)]
+expect("one day says day", est(one, [{"number": 1, "size": "s"}]) == {"1": "~1 day"}, est(one, [{"number": 1, "size": "s"}]))
+mix = [sample("m", h) for h in (5, 10, 40, 60, 70)]           # quartiles 10h..60h
+expect("hours to days", est(mix, [{"number": 1, "size": "m"}]) == {"1": "~10h–2 days"}, est(mix, [{"number": 1, "size": "m"}]))
+
+
+# test_debt_config: the dispatch job's `with:` in the caller, else the defaults
+def debt_config(text):
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "agentkit.yml"
+        if text is not None:
+            f.write_text(text)
+        r = subprocess.run([sys.executable, str(SCRIPT), "debt-config", str(f)], capture_output=True)
+        assert r.returncode == 0, r.stderr.decode()
+        return r.stdout.decode().strip()
+
+
+caller = """jobs:
+  dispatch:
+    uses: o/agentkit/.github/workflows/dispatch.yml@v1
+    with:
+      wip: 2
+      {every}
+      {label}
+    secrets:
+      X: y
+  review:
+    with:
+      debt-every: 9
+"""
+expect("debt config: commented lines are defaults",
+       debt_config(caller.format(every="# debt-every: 2", label="# debt-label: chore")) == "4 type:debt")
+expect("debt config: set values win", debt_config(caller.format(every="debt-every: 0", label='debt-label: "type: cleanup"')) == "0 type: cleanup",
+       debt_config(caller.format(every="debt-every: 0", label='debt-label: "type: cleanup"')))
+expect("debt config: another job's inputs are ignored", debt_config(caller.format(every="", label="")) == "4 type:debt")
+expect("debt config: an expression falls back to the default",
+       debt_config(caller.format(every="debt-every: ${{ fromJSON(vars.X) }}", label="")) == "4 type:debt")
+expect("debt config: no caller file is the defaults", debt_config(None) == "4 type:debt")
+
 sys.exit(1 if fails else 0)
