@@ -33,7 +33,7 @@ nolog() { ! grep -q -- "$1" "$FAKE_LOG"; }       # the log has none
 count() { [ "$(grep -c -- "$1" "$FAKE_LOG")" = "$2" ]; }
 # The logged comment body spans lines: the call is on the first, the marker and the reason follow.
 : >"$FAKE_LOG"
-out=$(FAKE_JSON='[{"number":7,"state":"open"},{"number":8,"state":"closed"}]' "$here/../scripts/drop-dependency.sh" o/r 3 "Old idea")
+out=$(FAKE_JSON='[{"number":7,"state":"open","repository_url":"https://api.github.com/repos/o/r"},{"number":8,"state":"closed","repository_url":"https://api.github.com/repos/o/r"}]' "$here/../scripts/drop-dependency.sh" o/r 3 "Old idea")
 ok "prints the affected number" [ "$out" = 7 ]
 ok "lists the closed issue's dependents" logs 'repos/o/r/issues/3/dependencies/blocking'
 ok "one comment on 7" count '^issue comment 7 ' 1
@@ -43,7 +43,7 @@ ok "7 moves to status:blocked" count '^issue edit 7 .*--add-label status:blocked
 ok "nothing for the closed dependent" nolog '^issue [a-z]* 8 '
 # An already-blocked dependent gets the comment, but its label is left alone.
 : >"$FAKE_LOG"
-FAKE_LABELS=status:blocked FAKE_JSON='[{"number":7,"state":"open"}]' "$here/../scripts/drop-dependency.sh" o/r 3 "Old idea" >/dev/null
+FAKE_LABELS=status:blocked FAKE_JSON='[{"number":7,"state":"open","repository_url":"https://api.github.com/repos/o/r"}]' "$here/../scripts/drop-dependency.sh" o/r 3 "Old idea" >/dev/null
 ok "already blocked: still commented" count '^issue comment 7 ' 1
 ok "already blocked: no label removed" nolog '--remove-label'
 # No dependents: no output, no writes.
@@ -51,4 +51,15 @@ ok "already blocked: no label removed" nolog '--remove-label'
 out=$(FAKE_JSON='[]' "$here/../scripts/drop-dependency.sh" o/r 3 "Old idea")
 ok "no dependents prints nothing" [ -z "$out" ]
 ok "no dependents writes nothing" nolog '^issue '
+# A dependent in another repo is never addressed by its bare number here (test_drop_dependency_cross_repo);
+# the repo compares case-insensitively, and the skip is logged on stderr only.
+: >"$FAKE_LOG"
+out=$(FAKE_JSON='[{"number":9,"state":"open","repository_url":"https://api.github.com/repos/x/y"},{"number":7,"state":"open","repository_url":"https://api.github.com/repos/O/R"}]' \
+  "$here/../scripts/drop-dependency.sh" o/r 3 "Old idea" 2>"$tmp/err")
+ok "cross-repo: stdout lists only the same-repo number" [ "$out" = 7 ]
+ok "cross-repo: nothing commented on 9" nolog '^issue comment 9 '
+ok "cross-repo: nothing edited on 9" nolog '^issue edit 9 '
+ok "cross-repo: nothing viewed on 9" nolog '^issue view 9 '
+ok "cross-repo: same repo in other case still handled" count '^issue comment 7 ' 1
+ok "cross-repo: skip logged on stderr" grep -qx 'skip x/y#9: other repo' "$tmp/err"
 exit $fail

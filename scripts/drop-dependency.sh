@@ -5,10 +5,18 @@
 set -euo pipefail
 repo=$1 n=$2 title=$3
 here=$(cd "$(dirname "$0")" && pwd)
+# Only dependents in this repo are touched: a number from another repo would address an unrelated issue here.
+# The repo goes to jq through the environment, not into the filter. Output lines: "own <n>" or "skip <owner/repo>#<n>".
 # capture first so an API error stops the script (fail closed)
-deps=$(gh api --paginate "repos/$repo/issues/$n/dependencies/blocking" --jq '.[] | select(.state == "open") | .number')
-while IFS= read -r dep; do
-  [ -n "$dep" ] || continue
+deps=$(DROP_REPO="$repo" gh api --paginate "repos/$repo/issues/$n/dependencies/blocking" --jq '.[] | select(.state == "open")
+  | if ((.repository_url // "") | ascii_downcase | endswith("/repos/" + (env.DROP_REPO | ascii_downcase)))
+    then "own \(.number)" else "skip \((.repository_url // "?") | sub(".*/repos/"; ""))#\(.number)" end')
+while read -r kind dep; do
+  case "$kind" in
+    own) ;;
+    skip) echo "skip $dep: other repo" >&2; continue ;;
+    *) continue ;;
+  esac
   gh issue comment "$dep" --repo "$repo" --body "<!-- agentkit:block -->
 **Blocked:** dropped dependency: #$n ($title)" >/dev/null
   "$here/set-status.sh" "$repo" "$dep" status:blocked
