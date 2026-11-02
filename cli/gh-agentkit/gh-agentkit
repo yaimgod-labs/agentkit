@@ -199,6 +199,11 @@ setup_board() {
       | gh api graphql --input - >/dev/null
     say "board: stages now $(jq -r 'map(.name) | join(", ")' <<<"$merged")"
   fi
+  # Rank: the number /board move writes and the dispatcher reads (lowest first); boards from before it get it here
+  if [ -z "$(gh project field-list "$num" --owner "$owner" --format json --jq '.fields[]|select(.name=="Rank").id')" ]; then
+    gh project field-create "$num" --owner "$owner" --name Rank --data-type NUMBER >/dev/null
+    say "board: added the Rank field"
+  fi
   say "board: https://github.com/orgs/$owner/projects/$num (group by Stage)"
 }
 
@@ -344,6 +349,8 @@ cmd_doctor() {
     local have_st; have_st=$(gh project field-list "$num" --owner "$owner" --format json --jq '.fields[]|select(.name=="Stage")|.options[].name' 2>/dev/null)
     local miss_st; miss_st=$(tr ',' '\n' <<<"$STAGES" | grep -vxF -f <(printf '%s\n' "$have_st") | paste -sd, - || true)
     [ -z "$miss_st" ] && ok "board stages" || warn "board missing stages: $miss_st (gh agentkit upgrade $repo)"
+    [ -n "$(gh project field-list "$num" --owner "$owner" --format json --jq '.fields[]|select(.name=="Rank").id' 2>/dev/null)" ] \
+      && ok "board has a Rank field" || warn "board has no Rank field: /board cannot reorder tasks (gh agentkit upgrade $repo)"
   fi
 
   if [ -s "$CONF/app.pem" ] && [ -s "$CONF/client-id" ]; then
