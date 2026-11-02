@@ -8,6 +8,7 @@ echo "shellcheck: ok"
 /bin/bash -n cli/gh-agentkit/gh-agentkit && echo "bash 3.2 parse: ok"
 tests/test_guard.sh
 tests/test_set_status.sh
+tests/test_blockers.sh
 tests/test_checklist.sh
 tests/test_upgrade.sh
 python3 tests/test_marketplace.py
