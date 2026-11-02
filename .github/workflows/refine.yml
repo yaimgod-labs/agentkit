@@ -115,6 +115,15 @@ jobs:
             --max-turns ${{ inputs.max-turns }}
             --allowedTools Bash(gh:*),Bash(rg:*),Bash(git log:*),Read,Glob,Grep,Skill
 
+      - name: Usage
+        if: always() && steps.claude.outputs.execution_file != ''
+        continue-on-error: true  # usage logging never fails a run
+        uses: ./.agentkit-kit/.github/actions/usage
+        with:
+          execution-file: ${{ steps.claude.outputs.execution_file }}
+          job: refine
+          model: ${{ inputs.model }}
+
       - name: Apply verdict
         env:
           GH_TOKEN: ${{ steps.write.outputs.token }}
