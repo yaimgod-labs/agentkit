@@ -1,0 +1,8 @@
+{
+  "name": "agentkit",
+  "version": "1.0.0",
+  "author": {
+    "name": "agentkit"
+  },
+  "description": "Skills, subagents, hooks and commands shared by local Claude Code and the agentkit CI workflows"
+}

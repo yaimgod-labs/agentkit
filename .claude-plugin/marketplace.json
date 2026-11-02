@@ -1,0 +1,32 @@
+{
+  "name": "agentkit",
+  "description": "Agent-driven GitHub lifecycle: planning, implementation and review skills, agents and guard hooks, plus generic third-party plugins pinned to a commit. Project-specific plugins belong in the project's own .claude-plugin/marketplace.json.",
+  "owner": {
+    "name": "agentkit"
+  },
+  "plugins": [
+    {
+      "name": "agentkit",
+      "source": "./plugins/agentkit",
+      "description": "Skills, subagents, hooks and commands shared by local Claude Code and the agentkit CI workflows"
+    },
+    {
+      "name": "ponytail",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/DietrichGebert/ponytail.git",
+        "sha": "96608e078b2d5ea607c5c3b8b5a54d1c1fba6846"
+      },
+      "description": "Minimal-diff coding mode (MIT, DietrichGebert). SessionStart/SubagentStart/UserPromptSubmit hooks inject text and write local mode files; no network."
+    },
+    {
+      "name": "caveman",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/JuliusBrussee/caveman.git",
+        "sha": "2e068f735253cce28256744804785f01887d9646"
+      },
+      "description": "Terse-prose mode (Apache-2.0, JuliusBrussee). SessionStart/SubagentStart/UserPromptSubmit hooks run local Node scripts that inject text and write local state; no network. Leaves code, commits and PR text in normal prose."
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+name: Feature
+description: A deliverable small enough for one PR (1–2 days)
+labels: ["type:feature", "status:backlog"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why, in 2–4 lines. Link the epic and relevant files.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Verifiable checks — a test, a command, an observable behaviour.
+      value: |
+        - [ ] 
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope

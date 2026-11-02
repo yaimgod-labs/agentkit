@@ -1,0 +1,156 @@
+# Dispatcher: promotes the top unblocked status:ready issue (not mode:human, not size:m/l)
+# to status:in-progress while fewer than WIP issues are in flight; mirrors status
+# labels onto the board; closes the linked issue when an agent PR merges into a
+# non-default branch; approves a PR once its Human verification boxes are ticked.
+name: agentkit-dispatch
+
+on:
+  workflow_call:
+    inputs:
+      agentkit-ref:
+        description: Override the kit commit, branch or tag to load scripts and the plugin from (default — the commit the caller's `uses:` resolved to)
+        type: string
+        default: ""
+      wip:
+        description: Max issues in flight (in-progress + review + changes-requested)
+        type: number
+        default: 2
+    secrets:
+      AGENTKIT_APP_KEY:
+        required: true
+
+permissions: {}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # one dispatcher run at a time per repo; queued runs are not cancelled
+    concurrency:
+      group: agentkit-dispatch-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+
+      # the kit's plugin, scripts and actions, from the repo and commit this workflow itself was loaded from
+      # (the caller's `uses:`), so no owner or ref is written down anywhere in the kit
+      - name: Load agentkit
+        id: kit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: dispatch.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          # ponytail: anonymous fetch, so the kit repo must be public; add token auth for a private fork
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+          if [ -d .git ]; then echo .agentkit-kit/ >>.git/info/exclude; fi
+          # a project marketplace (.claude-plugin/marketplace.json) adds the project's own pinned plugins
+          if [ -f .claude-plugin/marketplace.json ]; then echo "project-marketplace=$GITHUB_WORKSPACE" >>"$GITHUB_OUTPUT"; fi
+
+      - name: Sync board status
+        continue-on-error: true  # a board problem must never stop dispatching
+        if: github.event_name == 'issues' && github.event.action == 'labeled' && startsWith(github.event.label.name, 'status:') && vars.AGENTKIT_PROJECT != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          LABEL: ${{ github.event.label.name }}
+          OWNER: ${{ github.repository_owner }}
+          PROJECT: ${{ vars.AGENTKIT_PROJECT }}
+        run: |
+          stage=$(case "$LABEL" in
+            status:backlog) echo Backlog;; status:ready) echo Ready;; status:in-progress) echo "In progress";;
+            status:review) echo Review;; status:changes-requested) echo "Changes requested";; status:approved) echo Approved;;
+            status:blocked) echo Blocked;; status:needs-human) echo "Needs human";;
+            status:refining) echo Refining;; status:needs-info) echo "Needs info";;
+            status:needs-device-check) echo "Needs device check";; esac)
+          [ -n "$stage" ] || exit 0
+          pid=$(gh project view "$PROJECT" --owner "$OWNER" --format json --jq .id)
+          item=$(gh project item-add "$PROJECT" --owner "$OWNER" --url "$ISSUE_URL" --format json --jq .id)
+          field=$(gh project field-list "$PROJECT" --owner "$OWNER" --format json --jq '.fields[]|select(.name=="Stage")')
+          fid=$(jq -r .id <<<"$field"); oid=$(jq -r --arg s "$stage" '.options[]|select(.name==$s).id' <<<"$field")
+          [ -n "$oid" ] || { echo "::warning::board Stage field has no '$stage' option; add it in the project settings"; exit 0; }
+          gh project item-edit --project-id "$pid" --id "$item" --field-id "$fid" --single-select-option-id "$oid"
+
+      - name: Close issue of merged agent PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.merged
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
+          [ -n "$n" ] || exit 0
+          gh issue close "$n" --repo "$REPO" --reason completed || true  # already closed when merged into the default branch
+          .agentkit-kit/scripts/set-status.sh "$REPO" "$n" || true
+
+      - name: Approve after human verification
+        if: github.event_name == 'pull_request' && github.event.action == 'edited'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
+          [ -n "$n" ] || exit 0
+          gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx status:needs-device-check || exit 0
+          read -r unmet human < <(printf '%s\n' "$BODY" | .agentkit-kit/scripts/checklist.sh)
+          echo "#$n: $unmet unmet, $human human item(s) left"
+          if [ "$unmet" -eq 0 ] && [ "$human" -eq 0 ]; then .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:approved; fi
+
+      - name: List ready issues
+        id: ready
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          WIP: ${{ inputs.wip }}
+        run: |
+          inflight=0
+          for l in status:in-progress status:review status:changes-requested; do
+            c=$(gh issue list --repo "$REPO" --state open --label "$l" --json number --jq length)
+            inflight=$((inflight + c))
+          done
+          echo "in flight: $inflight / $WIP"
+          [ "$inflight" -lt "$WIP" ] || exit 0
+          gh api --paginate "repos/$REPO/issues?state=open&labels=status:ready&per_page=100" \
+            | jq -cs '[.[][] | select(.pull_request | not) | {number, author: .user.login, l: [.labels[].name]}
+                   # only agent work small enough for one PR: mode:human is for people, size:m/l must be split first
+                   | select(.l | any(. == "mode:human" or . == "size:m" or . == "size:l") | not)
+                   | {number, author, p: (.l | if index("priority:high") then 0 elif index("priority:medium") then 1 elif index("priority:low") then 2 else 3 end)}]
+                  | sort_by(.p, .number)' >"$RUNNER_TEMP/ready.json"
+          echo "authors=$(jq -r '[.[].author] | unique | join(" ")' "$RUNNER_TEMP/ready.json")" >>"$GITHUB_OUTPUT"
+
+      # prompt-injection guard: only issues written by people with write access (or agentkit itself)
+      - id: trust
+        if: steps.ready.outputs.authors != ''
+        uses: ./.agentkit-kit/.github/actions/trusted
+        with:
+          logins: ${{ steps.ready.outputs.authors }}
+          token: ${{ steps.app.outputs.token }}
+          bot: ${{ steps.app.outputs.app-slug }}[bot]
+
+      - name: Promote next ready issue
+        if: steps.ready.outputs.authors != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          TRUSTED: ${{ steps.trust.outputs.trusted }}
+        run: |
+          candidates=$(jq -r --arg t " $TRUSTED " '.[] | . as $i | select($t | contains(" \($i.author) ")) | .number' "$RUNNER_TEMP/ready.json")
+          for n in $candidates; do
+            open=$(gh api "repos/$REPO/issues/$n/dependencies/blocked_by" --jq '[.[]|select(.state=="open")]|length')
+            if [ "$open" -gt 0 ]; then echo "#$n blocked by $open open issue(s)"; continue; fi
+            .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:in-progress
+            echo "promoted #$n"
+            exit 0
+          done
+          echo "nothing ready and unblocked"

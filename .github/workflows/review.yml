@@ -1,0 +1,309 @@
+# Reviews: code + security (Claude, separate fresh-context jobs, read-only repo
+# access) and integration (the project's own test script), then a gate that
+# moves the linked issue to status:approved or back to the implementer.
+name: agentkit-review
+
+on:
+  workflow_call:
+    inputs:
+      agentkit-ref:
+        description: Override the kit commit, branch or tag to load scripts and the plugin from (default — the commit the caller's `uses:` resolved to)
+        type: string
+        default: ""
+      model:
+        description: Claude model for every agent in this workflow
+        type: string
+        default: claude-opus-5-5
+      plugins:
+        description: Extra plugins (newline list of NAME@MARKETPLACE — `agentkit` for the kit's pinned externals, or the name in this repo's .claude-plugin/marketplace.json)
+        type: string
+        default: ""
+      max-turns:
+        type: number
+        default: 40
+      max-rounds:
+        description: Failed review rounds before the issue goes to status:needs-human
+        type: number
+        default: 3
+    secrets:
+      AGENTKIT_APP_KEY:
+        required: true
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  review:
+    # forks get no secrets; same-repo PRs only
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read  # checkout of a private repo
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [code, security]
+    concurrency:
+      group: agentkit-review-${{ github.repository }}-${{ github.event.pull_request.number }}-${{ matrix.kind }}
+      cancel-in-progress: true
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: write
+          permission-actions: read
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # the kit's plugin, scripts and actions, from the repo and commit this workflow itself was loaded from
+      # (the caller's `uses:`), so no owner or ref is written down anywhere in the kit
+      - name: Load agentkit
+        id: kit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: review.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          # ponytail: anonymous fetch, so the kit repo must be public; add token auth for a private fork
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+          if [ -d .git ]; then echo .agentkit-kit/ >>.git/info/exclude; fi
+          # a project marketplace (.claude-plugin/marketplace.json) adds the project's own pinned plugins
+          if [ -f .claude-plugin/marketplace.json ]; then echo "project-marketplace=$GITHUB_WORKSPACE" >>"$GITHUB_OUTPUT"; fi
+
+      # give the reviewer its inputs as files, so it never needs GitHub access to judge the criteria
+      - name: Collect review context
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          mkdir -p .agentkit-review
+          body=$(gh pr view "$PR" --repo "$REPO" --json title,body --jq '"# PR: \(.title)\n\n\(.body)"')
+          printf '%s\n' "$body" >.agentkit-review/pr.md
+          n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
+          [ -n "$n" ] || n=$(grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' <<<"$body" | head -n1 | grep -oE '[0-9]+' || true)
+          # --json, not --comments: piped, --comments prints only the comments (no title, body or criteria)
+          if [ -n "$n" ]; then gh issue view "$n" --repo "$REPO" --json number,title,body,comments \
+            --jq '"# Issue #\(.number): \(.title)\n\n\(.body)\n\n## Comments\n" + ([.comments[] | "\n### \(.author.login)\n\n\(.body)\n"] | join(""))' >.agentkit-review/issue.md
+          else echo "No linked issue." >.agentkit-review/issue.md; fi
+          [ -s .agentkit-review/issue.md ] || { echo "::error::linked issue export is empty"; exit 1; }
+          git diff "origin/$BASE...HEAD" >.agentkit-review/diff.patch
+          wc -c .agentkit-review/*
+
+      - id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app.outputs.token }}
+          # agent PRs are opened and pushed by our App
+          allowed_bots: ${{ steps.app.outputs.app-slug }}
+          plugin_marketplaces: |
+            ${{ github.workspace }}/.agentkit-kit
+            ${{ steps.kit.outputs.project-marketplace }}
+          plugins: |
+            agentkit@agentkit
+            ${{ inputs.plugins }}
+          prompt: |
+            Repository ${{ github.repository }}, pull request #${{ github.event.pull_request.number }},
+            base branch origin/${{ github.event.pull_request.base.ref }}.
+            Your inputs: .agentkit-review/pr.md (PR description), .agentkit-review/issue.md (linked issue with its
+            acceptance criteria and comments), .agentkit-review/diff.patch (the diff). Read all three first.
+            Use the agentkit:review-${{ matrix.kind }} skill. You are read-only: never edit files, commit or push.
+            Post findings as inline comments on the PR, then return the verdict.
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns ${{ inputs.max-turns }}
+            --allowedTools Bash(git:*),Read,Glob,Grep,Skill,mcp__github_inline_comment__create_inline_comment
+            --json-schema '{"type":"object","required":["verdict","summary"],"properties":{"verdict":{"enum":["pass","fail"]},"summary":{"type":"string"}}}'
+
+      - name: Verdict
+        env:
+          OUT: ${{ steps.claude.outputs.structured_output }}
+        run: |
+          verdict=$(jq -r '.verdict // "fail"' <<<"${OUT:-{\}}")
+          jq -r '.summary // "no summary"' <<<"${OUT:-{\}}" >>"$GITHUB_STEP_SUMMARY"
+          echo "verdict: $verdict"
+          [ "$verdict" = "pass" ]
+
+  integration:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    concurrency:
+      group: agentkit-integration-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Run .agentkit/test.sh
+        run: |
+          if [ ! -x .agentkit/test.sh ]; then
+            echo "::warning::no executable .agentkit/test.sh — integration check skipped"
+            exit 0
+          fi
+          .agentkit/test.sh
+
+  # docs/ consistency: schema, links, index, and docs whose `covers` code changed (see scripts/docs.py)
+  docs:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: agentkit-docs-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-contents: read
+          permission-pull-requests: write
+          permission-actions: read
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # the kit's plugin, scripts and actions, from the repo and commit this workflow itself was loaded from
+      # (the caller's `uses:`), so no owner or ref is written down anywhere in the kit
+      - name: Load agentkit
+        id: kit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: review.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          # ponytail: anonymous fetch, so the kit repo must be public; add token auth for a private fork
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+          if [ -d .git ]; then echo .agentkit-kit/ >>.git/info/exclude; fi
+          # a project marketplace (.claude-plugin/marketplace.json) adds the project's own pinned plugins
+          if [ -f .claude-plugin/marketplace.json ]; then echo "project-marketplace=$GITHUB_WORKSPACE" >>"$GITHUB_OUTPUT"; fi
+
+      - name: Check docs
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [ ! -d docs ]; then echo "no docs/ — skipped"; exit 0; fi
+          k=.agentkit-kit/plugins/agentkit/scripts/docs.py
+          gh pr view "$PR" --repo "$REPO" --json body --jq .body >"$RUNNER_TEMP/body.md"
+          rc=0
+          for args in "check" "index --check" "drift origin/$BASE --pr-body $RUNNER_TEMP/body.md"; do
+            # shellcheck disable=SC2086
+            python3 "$k" $args >>"$RUNNER_TEMP/docs.txt" 2>&1 || rc=1
+          done
+          cat "$RUNNER_TEMP/docs.txt"
+          if [ "$rc" -ne 0 ]; then
+            gh pr comment "$PR" --repo "$REPO" --body "<!-- agentkit:docs -->
+          **agentkit docs check failed**
+
+          $(cat "$RUNNER_TEMP/docs.txt")"
+          fi
+          exit "$rc"
+
+  gate:
+    needs: [review, integration, docs]
+    if: always() && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'agent/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: agentkit-gate-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+
+      # the kit's plugin, scripts and actions, from the repo and commit this workflow itself was loaded from
+      # (the caller's `uses:`), so no owner or ref is written down anywhere in the kit
+      - name: Load agentkit
+        id: kit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: review.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          # ponytail: anonymous fetch, so the kit repo must be public; add token auth for a private fork
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+          if [ -d .git ]; then echo .agentkit-kit/ >>.git/info/exclude; fi
+          # a project marketplace (.claude-plugin/marketplace.json) adds the project's own pinned plugins
+          if [ -f .claude-plugin/marketplace.json ]; then echo "project-marketplace=$GITHUB_WORKSPACE" >>"$GITHUB_OUTPUT"; fi
+
+      - env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+          REVIEW: ${{ needs.review.result }}
+          INTEGRATION: ${{ needs.integration.result }}
+          DOCS: ${{ needs.docs.result }}
+          AUTO_MERGE: ${{ vars.AUTO_MERGE }}
+          MAX_ROUNDS: ${{ inputs.max-rounds }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
+          set_status() { .agentkit-kit/scripts/set-status.sh "$REPO" "$n" "$@"; }
+          # a newer push cancelled this run's reviews: that run's gate decides
+          if [ "$REVIEW" = cancelled ] || [ "$INTEGRATION" = cancelled ] || [ "$DOCS" = cancelled ]; then exit 0; fi
+          # the implementer's own checklist in the PR body: an unticked criterion is a failed round;
+          # unticked boxes under "## Human verification" wait for a person instead
+          read -r unmet human < <(gh pr view "$PR" --repo "$REPO" --json body --jq .body | .agentkit-kit/scripts/checklist.sh)
+          if [ "$unmet" -gt 0 ]; then REVIEW="$REVIEW, $unmet unmet criteria"; fi
+          if [ "$REVIEW" = success ] && [ "$INTEGRATION" = success ] && [ "$DOCS" = success ]; then
+            if [ "$human" -gt 0 ]; then
+              set_status status:needs-device-check
+              gh pr comment "$PR" --repo "$REPO" --body "agentkit: all checks passed. $human item(s) under **Human verification** need a person: check them (on a device, a staging build or wherever the item says) and tick the boxes in the PR description; ticking the last one approves the PR."
+              exit 0
+            fi
+            set_status status:approved
+            if [ "$AUTO_MERGE" = true ]; then gh pr merge "$PR" --repo "$REPO" --squash --delete-branch; fi
+            exit 0
+          fi
+          rounds=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '[.[]|select(.body|contains("<!-- agentkit:round -->"))]|length' | awk '{s+=$1} END {print s+0}')
+          rounds=$((rounds + 1))
+          if [ "$rounds" -ge "$MAX_ROUNDS" ]; then
+            gh pr comment "$PR" --repo "$REPO" --body "<!-- agentkit:round -->
+          agentkit: review round $rounds of $MAX_ROUNDS failed (review: $REVIEW, integration: $INTEGRATION, docs: $DOCS, $RUN). Stopping the fix loop — needs a human."
+            set_status status:needs-human reason:agent-error
+          else
+            gh pr comment "$PR" --repo "$REPO" --body "<!-- agentkit:round -->
+          agentkit: review round $rounds of $MAX_ROUNDS failed (review: $REVIEW, integration: $INTEGRATION, docs: $DOCS, $RUN). Sending back to the implementer."
+            set_status status:changes-requested
+          fi

@@ -1,0 +1,98 @@
+# Planner: a "/plan" comment by an org owner/member on an issue turns that issue
+# (the PRD) into an epic with sub-issues labelled status:backlog.
+name: agentkit-plan
+
+on:
+  workflow_call:
+    inputs:
+      agentkit-ref:
+        description: Override the kit commit, branch or tag to load scripts and the plugin from (default — the commit the caller's `uses:` resolved to)
+        type: string
+        default: ""
+      model:
+        description: Claude model for every agent in this workflow
+        type: string
+        default: claude-opus-5-5
+      plugins:
+        description: Extra plugins (newline list of NAME@MARKETPLACE — `agentkit` for the kit's pinned externals, or the name in this repo's .claude-plugin/marketplace.json)
+        type: string
+        default: ""
+    secrets:
+      AGENTKIT_APP_KEY:
+        required: true
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  plan:
+    if: startsWith(github.event.comment.body, '/plan')
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read  # checkout of a private repo
+    concurrency:
+      group: agentkit-issue-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-contents: read
+          permission-issues: write
+          permission-actions: read
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # the kit's plugin, scripts and actions, from the repo and commit this workflow itself was loaded from
+      # (the caller's `uses:`), so no owner or ref is written down anywhere in the kit
+      - name: Load agentkit
+        id: kit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: plan.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          # ponytail: anonymous fetch, so the kit repo must be public; add token auth for a private fork
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+          if [ -d .git ]; then echo .agentkit-kit/ >>.git/info/exclude; fi
+          # a project marketplace (.claude-plugin/marketplace.json) adds the project's own pinned plugins
+          if [ -f .claude-plugin/marketplace.json ]; then echo "project-marketplace=$GITHUB_WORKSPACE" >>"$GITHUB_OUTPUT"; fi
+
+      # both the commenter and the PRD's author need write access
+      - uses: ./.agentkit-kit/.github/actions/trusted
+        with:
+          logins: ${{ github.event.comment.user.login }} ${{ github.event.issue.user.login }}
+          token: ${{ steps.app.outputs.token }}
+          bot: ${{ steps.app.outputs.app-slug }}[bot]
+          require-all: "true"
+
+      - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app.outputs.token }}
+          plugin_marketplaces: |
+            ${{ github.workspace }}/.agentkit-kit
+            ${{ steps.kit.outputs.project-marketplace }}
+          plugins: |
+            agentkit@agentkit
+            ${{ inputs.plugins }}
+          prompt: |
+            Repository ${{ github.repository }}. Issue #${{ github.event.issue.number }} is the PRD.
+            Use the agentkit:plan-feature skill with that issue as the epic. Do not edit repository files.
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns 60
+            --allowedTools Bash(gh:*),Read,Glob,Grep,Skill

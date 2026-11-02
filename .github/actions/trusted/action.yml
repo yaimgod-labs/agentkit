@@ -1,0 +1,45 @@
+# Trust check shared by the agentkit workflows: a login is trusted if it has
+# write, maintain or admin access to the repo, or is the agentkit App itself.
+# (author_association is not usable: App tokens see private org members as CONTRIBUTOR.)
+name: agentkit-trusted
+description: Filter GitHub logins down to those trusted to drive agentkit
+inputs:
+  logins:
+    description: Whitespace-separated logins to check
+    required: true
+  token:
+    description: App installation token
+    required: true
+  bot:
+    description: The agentkit App's bot login (always trusted)
+    required: true
+  require-all:
+    description: Fail the step unless every login is trusted
+    default: "false"
+outputs:
+  trusted:
+    description: Space-separated trusted logins
+    value: ${{ steps.check.outputs.trusted }}
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        LOGINS: ${{ inputs.logins }}
+        BOT: ${{ inputs.bot }}
+        REQUIRE_ALL: ${{ inputs.require-all }}
+        REPO: ${{ github.repository }}
+      run: |
+        trusted=() untrusted=()
+        for login in $(tr ' ' '\n' <<<"$LOGINS" | sort -u); do
+          if [ "$login" = "$BOT" ]; then trusted+=("$login"); continue; fi
+          perm=$(gh api "repos/$REPO/collaborators/$login/permission" --jq .permission 2>/dev/null || echo none)
+          case $perm in admin|maintain|write) trusted+=("$login");; *) untrusted+=("$login");; esac
+        done
+        echo "trusted=${trusted[*]}" >>"$GITHUB_OUTPUT"
+        if [ ${#untrusted[@]} -gt 0 ]; then
+          echo "::warning::not trusted (no write access): ${untrusted[*]}"
+          [ "$REQUIRE_ALL" != true ] || { echo "::error::refusing to act on content from ${untrusted[*]}"; exit 1; }
+        fi

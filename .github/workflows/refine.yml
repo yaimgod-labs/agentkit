@@ -1,0 +1,155 @@
+# Refiner: runs on status:refining, and again when a person answers on a
+# status:needs-info issue. Claude (read-only) triages and plans the issue; this
+# workflow posts the plan and questions, sets size/type/mode labels, and moves the
+# issue to status:ready (small and clear) or status:needs-info (assigned to you).
+name: agentkit-refine
+
+on:
+  workflow_call:
+    inputs:
+      agentkit-ref:
+        description: Override the kit commit, branch or tag to load scripts and the plugin from (default — the commit the caller's `uses:` resolved to)
+        type: string
+        default: ""
+      model:
+        description: Claude model for every agent in this workflow
+        type: string
+        default: claude-opus-5-5
+      plugins:
+        description: Extra plugins (newline list of NAME@MARKETPLACE — `agentkit` for the kit's pinned externals, or the name in this repo's .claude-plugin/marketplace.json)
+        type: string
+        default: ""
+      max-turns:
+        type: number
+        default: 40
+    secrets:
+      AGENTKIT_APP_KEY:
+        required: true
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  refine:
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    permissions:
+      contents: read  # checkout of a private repo
+    concurrency:
+      group: agentkit-issue-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    env:
+      REPO: ${{ github.repository }}
+      N: ${{ github.event.issue.number }}
+      SENDER: ${{ github.event.sender.login }}
+    steps:
+      - id: write
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-issues: write
+          permission-actions: read
+
+      # what Claude gets: read the repo, issues and PRs; no writes at all
+      - id: read
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # the kit's plugin, scripts and actions, from the repo and commit this workflow itself was loaded from
+      # (the caller's `uses:`), so no owner or ref is written down anywhere in the kit
+      - name: Load agentkit
+        id: kit
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: refine.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          # ponytail: anonymous fetch, so the kit repo must be public; add token auth for a private fork
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+          if [ -d .git ]; then echo .agentkit-kit/ >>.git/info/exclude; fi
+          # a project marketplace (.claude-plugin/marketplace.json) adds the project's own pinned plugins
+          if [ -f .claude-plugin/marketplace.json ]; then echo "project-marketplace=$GITHUB_WORKSPACE" >>"$GITHUB_OUTPUT"; fi
+
+      # both the issue's author and whoever started this run (labelled it, or answered) need write access
+      - uses: ./.agentkit-kit/.github/actions/trusted
+        with:
+          logins: ${{ github.event.issue.user.login }} ${{ github.event.sender.login }}
+          token: ${{ steps.write.outputs.token }}
+          bot: ${{ steps.write.outputs.app-slug }}[bot]
+          require-all: "true"
+
+      - id: claude
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ steps.read.outputs.token }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.read.outputs.token }}
+          plugin_marketplaces: |
+            ${{ github.workspace }}/.agentkit-kit
+            ${{ steps.kit.outputs.project-marketplace }}
+          plugins: |
+            agentkit@agentkit
+            ${{ inputs.plugins }}
+          prompt: |
+            Repository ${{ github.repository }}, issue #${{ github.event.issue.number }}.
+            Use the agentkit:refine-issue skill on this issue. Do not edit files; your token is read-only.
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns ${{ inputs.max-turns }}
+            --allowedTools Bash(gh:*),Bash(rg:*),Bash(git log:*),Read,Glob,Grep,Skill
+
+      - name: Apply verdict
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          EXEC: ${{ steps.claude.outputs.execution_file }}
+          BOT: ${{ steps.write.outputs.app-slug }}[bot]
+        run: |
+          result=$(jq -r '[.[] | select(.type=="result")] | last | .result // ""' "$EXEC")
+          verdict=$(sed -n 's/^VERDICT: //p' <<<"$result" | tail -1)
+          # trust nothing in the verdict beyond these values
+          if ! jq -e '(.status|IN("ready","needs-info")) and (.size|IN("xs","s","m","l"))
+                      and (.type|IN("feature","bug","chore")) and (.mode|IN("agent","human","pair"))' <<<"$verdict" >/dev/null 2>&1; then
+            echo "::error::no valid VERDICT line in the refiner's answer: ${verdict:-none}"
+            exit 1
+          fi
+          gh issue comment "$N" --repo "$REPO" --body "$(grep -v '^VERDICT: ' <<<"$result")"
+          new=$(jq -r '"size:\(.size) type:\(.type) mode:\(.mode)"' <<<"$verdict")
+          args=()
+          while IFS= read -r l; do
+            case " $new " in *" $l "*) ;; *) args+=(--remove-label "$l") ;; esac
+          done < <(gh issue view "$N" --repo "$REPO" --json labels \
+                   --jq '.labels[].name | select(test("^(size|mode):") or IN("type:feature","type:bug","type:chore"))')
+          for l in $new; do args+=(--add-label "$l"); done
+          gh issue edit "$N" --repo "$REPO" "${args[@]}" >/dev/null
+          status=$(jq -r .status <<<"$verdict")
+          .agentkit-kit/scripts/set-status.sh "$REPO" "$N" "status:$status"
+          if [ "$status" = needs-info ] && [ "$SENDER" != "$BOT" ]; then
+            gh issue edit "$N" --repo "$REPO" --add-assignee "$SENDER" >/dev/null || true  # assignee must be a collaborator
+          fi
+
+      - name: Hand over on failure
+        if: failure() || cancelled()
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue comment "$N" --repo "$REPO" --body "agentkit: refine run failed or timed out ($RUN). Needs a human."
+          .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error \
+            || gh issue edit "$N" --repo "$REPO" --add-label status:needs-human --add-label reason:agent-error

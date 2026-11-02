@@ -1,0 +1,353 @@
+#!/usr/bin/env bash
+# gh agentkit — set up and check agentkit in a repository.
+# Install: gh extension install ./cli/gh-agentkit   (from an agentkit checkout)
+set -euo pipefail
+
+HERE=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")" && pwd)
+KIT=$(cd "$HERE/../.." && pwd)
+# owner/name of the kit repo this CLI belongs to, written into project files in place of the `your-org/agentkit` placeholder
+KIT_REPO=$(git -C "$KIT" remote get-url origin 2>/dev/null | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##')
+CONF=${AGENTKIT_CONFIG:-$HOME/.config/agentkit}
+LABELS=(
+  "status:backlog|ededed|Not yet ready to work"
+  "status:refining|c5def5|An agent is triaging and planning it"
+  "status:needs-info|d4c5f9|Questions on the issue; answer in a comment"
+  "status:ready|0e8a16|Picked by a human; the dispatcher takes it next"
+  "status:in-progress|fbca04|An implementer is working on it"
+  "status:review|1d76db|PR open, reviews running"
+  "status:changes-requested|d93f0b|Review failed; implementer fixing"
+  "status:approved|0b6623|All checks green; waiting for a human merge"
+  "status:blocked|b60205|Waiting on something outside the repo"
+  "status:needs-human|5319e7|Automation stopped; a human must act"
+  "status:needs-device-check|bfd4f2|Checks green; a person must verify the Human verification items"
+  "size:xs|ededed|Under an hour, one file"
+  "size:s|ededed|One PR, at most a day"
+  "size:m|ededed|Several PRs; split before work"
+  "size:l|ededed|An epic; split before work"
+  "mode:agent|0e8a16|Agents build and verify it"
+  "mode:pair|fbca04|Agents build it; a person ticks its Human verification items"
+  "mode:human|5319e7|A person does it; the dispatcher skips it"
+  "reason:unclear-spec|e99695|Handed over: the spec was unclear"
+  "reason:env|e99695|Handed over: environment or credentials"
+  "reason:flaky|e99695|Handed over: flaky tests or CI"
+  "reason:too-big|e99695|Handed over: too big for one PR"
+  "reason:agent-error|e99695|Handed over: the agent failed or timed out"
+  "reason:device|e99695|Handed over: needs a real device"
+  "type:feature|a2eeef|New capability"
+  "type:bug|d73a4a|Something is broken"
+  "type:chore|cfd3d7|Infra, tooling, maintenance"
+  "type:epic|3e4b9e|Parent of sub-issues; never on the status flow"
+  "priority:high|b60205|Do first"
+  "priority:medium|fbca04|Normal"
+  "priority:low|c2e0c6|When there is room"
+)
+STAGES="Backlog,Refining,Needs info,Ready,In progress,Review,Changes requested,Needs device check,Approved,Blocked,Needs human,Done"
+CHECKS=("review / review (code)" "review / review (security)" "review / integration")
+
+die() { echo "error: $*" >&2; exit 1; }
+say() { echo "• $*"; }
+usage() {
+  cat <<'EOF'
+gh agentkit <command>
+
+  app-create <org>            open the GitHub App creation page (from app/manifest.json)
+  app-convert <code>          finish App creation: saves key + client id to ~/.config/agentkit
+  secrets <owner/repo>        store the Claude token + App key as repo secrets, App client id as a variable
+  setup <owner/repo> [--base B] [--wip N]
+                              labels, board, variables, branch protection (idempotent)
+  upgrade <owner/repo>        after a kit release: labels, missing board stages, and one PR that syncs
+                              the caller workflow (keeps your with:, refs and extra jobs) and adds new kit files
+  init <owner/repo> [--base B] [--wip N]
+                              setup + one PR adding the kit files (never overwrites existing files)
+  doctor <owner/repo>         verify everything; non-zero exit on failure
+EOF
+}
+
+owner_of() { echo "${1%%/*}"; }
+var_get() { gh variable get "$2" --repo "$1" 2>/dev/null || true; }
+
+# ---- GitHub App -----------------------------------------------------------
+
+cmd_app_create() {
+  local org=${1:?org}
+  local out; out=$(mktemp -t agentkit-app).html
+  python3 - <(fill "" <"$KIT/app/manifest.json") "$org" >"$out" <<'PY'
+import html, json, sys
+manifest, org = json.load(open(sys.argv[1])), sys.argv[2]
+print(f"""<!doctype html><meta charset=utf-8><title>Create agentkit-bot</title>
+<form id=f method=post action="https://github.com/organizations/{html.escape(org)}/settings/apps/new">
+<input type=hidden name=manifest value="{html.escape(json.dumps(manifest))}">
+<p>Creating the <b>{html.escape(manifest['name'])}</b> GitHub App in <b>{html.escape(org)}</b>.</p>
+<button>Continue to GitHub</button></form>""")
+PY
+  say "opening $out — confirm on GitHub, then copy the code= value from the URL you land on (valid 1 hour)"
+  say "then run: gh agentkit app-convert <code>"
+  open "$out" 2>/dev/null || xdg-open "$out" 2>/dev/null || echo "open this file in a browser: $out"
+}
+
+cmd_app_convert() {
+  local code=${1:?code}
+  mkdir -p "$CONF" && chmod 700 "$CONF"
+  local resp; resp=$(gh api -X POST "app-manifests/$code/conversions")
+  (umask 077; jq -r .pem <<<"$resp" >"$CONF/app.pem")
+  jq -r .client_id <<<"$resp" >"$CONF/client-id"
+  jq -r .slug <<<"$resp" >"$CONF/slug"
+  say "saved App '$(cat "$CONF/slug")' (client id $(cat "$CONF/client-id")); key at $CONF/app.pem (mode 600)"
+  say "next: install it on the org — $(jq -r .html_url <<<"$resp")/installations/new"
+}
+
+# GitHub App JWT (RS256) from the saved key, for checks only
+app_jwt() {
+  local now; now=$(date +%s)
+  b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+  local h p; h=$(printf '{"alg":"RS256","typ":"JWT"}' | b64)
+  p=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((now - 60)) $((now + 540)) "$(cat "$CONF/client-id")" | b64)
+  printf '%s.%s.%s' "$h" "$p" "$(printf '%s.%s' "$h" "$p" | openssl dgst -sha256 -sign "$CONF/app.pem" | b64)"
+}
+
+# ---- secrets ----------------------------------------------------------------
+
+cmd_secrets() {
+  local repo=${1:?owner/repo}
+  [ -s "$CONF/app.pem" ] && [ -s "$CONF/client-id" ] || die "no App credentials in $CONF — run app-create / app-convert first"
+  gh secret set AGENTKIT_APP_KEY --repo "$repo" <"$CONF/app.pem"
+  gh variable set AGENTKIT_CLIENT_ID --repo "$repo" --body "$(cat "$CONF/client-id")"
+  if [ -s "$CONF/claude-token" ]; then
+    gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo "$repo" <"$CONF/claude-token"
+  else
+    say "paste the token from 'claude setup-token' (input hidden):"
+    gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo "$repo"
+  fi
+  say "secrets set on $repo"
+}
+
+# ---- setup ------------------------------------------------------------------
+
+cmd_setup() {
+  local repo=${1:?owner/repo}; shift
+  local base="" wip=""
+  while [ $# -gt 0 ]; do case $1 in --base) base=$2; shift 2;; --wip) wip=$2; shift 2;; *) die "unknown flag $1";; esac; done
+  [ -n "$base" ] || base=$(gh repo view "$repo" --json defaultBranchRef --jq .defaultBranchRef.name)
+
+  setup_labels "$repo"
+
+  say "variables"
+  [ -n "$(var_get "$repo" AGENTKIT_WIP)" ] && [ -z "$wip" ] || gh variable set AGENTKIT_WIP --repo "$repo" --body "${wip:-2}"
+  if [ "$base" != "$(gh repo view "$repo" --json defaultBranchRef --jq .defaultBranchRef.name)" ]; then
+    gh variable set AGENTKIT_BASE --repo "$repo" --body "$base"
+  fi
+
+  setup_board "$repo"
+
+  say "branch protection on $base"
+  local body; body=$(jq -n --argjson checks "$(printf '%s\n' "${CHECKS[@]}" | jq -R . | jq -s .)" '{
+    required_status_checks: {strict: false, contexts: $checks},
+    enforce_admins: false,
+    required_pull_request_reviews: null,
+    restrictions: null,
+    allow_force_pushes: false,
+    allow_deletions: false}')
+  if ! gh api -X PUT "repos/$repo/branches/$base/protection" --input - <<<"$body" >/dev/null 2>&1; then
+    echo "  ! could not protect $base (GitHub Free does not offer branch protection on private repos)."
+    echo "    The checks still run; merging stays manual. GitHub Team enables it."
+  fi
+}
+
+setup_labels() {
+  say "labels"
+  for l in "${LABELS[@]}"; do
+    IFS='|' read -r name color desc <<<"$l"
+    gh label create "$name" --repo "$1" --color "$color" --description "$desc" --force >/dev/null
+  done
+}
+
+setup_board() {
+  local repo=$1 owner; owner=$(owner_of "$1")
+  say "board"
+  local num; num=$(var_get "$repo" AGENTKIT_PROJECT)
+  if [ -z "$num" ]; then
+    num=$(gh project create --owner "$owner" --title "${repo#*/} board" --format json --jq .number)
+    gh project field-create "$num" --owner "$owner" --name Stage --data-type SINGLE_SELECT \
+      --single-select-options "$STAGES" >/dev/null
+    gh project link "$num" --owner "$owner" --repo "$repo" >/dev/null
+    gh variable set AGENTKIT_PROJECT --repo "$repo" --body "$num"
+  fi
+  # add Stage options a newer kit introduced; passing the existing option ids keeps every card's value
+  local fid opts merged
+  fid=$(gh project field-list "$num" --owner "$owner" --format json --jq '.fields[]|select(.name=="Stage").id')
+  opts=$(gh api graphql -f query='query($id:ID!){node(id:$id){... on ProjectV2SingleSelectField{options{id name color description}}}}' \
+    -f id="$fid" --jq .data.node.options)
+  merged=$(jq -c --arg want "$STAGES" '($want | split(",")) as $w | . as $have
+    | ($have + [$w[] | select(. as $n | $have | map(.name) | index($n) | not) | {name: ., color: "GRAY", description: ""}])
+    | sort_by(.name as $n | $w | index($n) // 999)' <<<"$opts")
+  if [ "$(jq length <<<"$merged")" -gt "$(jq length <<<"$opts")" ]; then
+    jq -n --argjson o "$merged" --arg id "$fid" '{variables: {id: $id, o: $o},
+      query: "mutation($id:ID!,$o:[ProjectV2SingleSelectFieldOptionInput!]){updateProjectV2Field(input:{fieldId:$id,singleSelectOptions:$o}){clientMutationId}}"}' \
+      | gh api graphql --input - >/dev/null
+    say "board: added stages $(jq -r --argjson have "$opts" '[.[] | select(.id == null) | .name] | join(", ")' <<<"$merged")"
+  fi
+  say "board: https://github.com/orgs/$owner/projects/$num (group by Stage)"
+}
+
+# template text with its placeholders filled in: your-org/agentkit (this kit's repo) and {{REPO}} (the project)
+fill() { sed -e "s#your-org/agentkit#$KIT_REPO#g" -e "s#{{REPO}}#$1#g"; }
+
+# copy kit template files the checkout lacks (never overwrite); fills ADDED and SKIPPED
+apply_templates() {
+  local repo=$1 f rel
+  ADDED=() SKIPPED=()
+  while IFS= read -r f; do
+    rel=${f#"$KIT/templates/"}
+    if [ -e "$rel" ]; then SKIPPED+=("$rel"); continue; fi
+    mkdir -p "$(dirname "$rel")" && cp -p "$f" "$rel" && fill "$repo" <"$f" >"$rel" && ADDED+=("$rel")  # cp keeps the mode
+  done < <(find "$KIT/templates" -type f | sort)
+  # merge the plugin into an existing .claude/settings.json instead of skipping it
+  if printf '%s\n' ${SKIPPED[@]+"${SKIPPED[@]}"} | grep -qx .claude/settings.json; then
+    jq -s '.[0] * .[1]' .claude/settings.json <(fill "$repo" <"$KIT/templates/.claude/settings.json") >.claude/settings.json.new
+    if cmp -s .claude/settings.json.new .claude/settings.json; then rm .claude/settings.json.new
+    else mv .claude/settings.json.new .claude/settings.json && ADDED+=(".claude/settings.json (merged)"); fi
+  fi
+  # template docs land next to the project's own: keep docs/README.md in step with both
+  if [ -d docs ]; then python3 "$KIT/plugins/agentkit/scripts/docs.py" index; fi
+}
+
+# ---- init -------------------------------------------------------------------
+
+cmd_init() {
+  local repo=${1:?owner/repo}
+  cmd_setup "$@"
+  shift
+  local base=""
+  while [ $# -gt 0 ]; do case $1 in --base) base=$2; shift 2;; *) shift 2;; esac; done
+  [ -n "$base" ] || base=$(gh repo view "$repo" --json defaultBranchRef --jq .defaultBranchRef.name)
+
+  local tmp; tmp=$(mktemp -d -t agentkit-init)
+  gh repo clone "$repo" "$tmp/repo" -- --depth 1 --branch "$base" -q
+  cd "$tmp/repo"
+  git switch -q -c agentkit/setup
+  apply_templates "$repo"
+  local added=(${ADDED[@]+"${ADDED[@]}"}) skipped=(${SKIPPED[@]+"${SKIPPED[@]}"})
+  git add -A
+  if git diff --cached --quiet; then say "nothing to add — kit files already present"; return; fi
+  git commit -q -m "chore: add agentkit" -m "Adds the agentkit caller workflow, Claude Code plugin settings, issue forms and PR template."
+  git push -q -u origin agentkit/setup
+  local skipped_md=""
+  [ ${#skipped[@]} -gt 0 ] && skipped_md=$(printf -- '- `%s` already exists, left untouched\n' "${skipped[@]}")
+  gh pr create --repo "$repo" --base "$base" --head agentkit/setup --title "chore: add agentkit" --body "$(cat <<EOF
+Adds agentkit to this repo.
+
+$(printf -- '- `%s`\n' "${added[@]}")
+$skipped_md
+
+After merging: fill in **Commands** in \`CLAUDE.md\` and \`.agentkit/test.sh\`, then run \`gh agentkit doctor $repo\`.
+Workflows start running as soon as this merges — run \`gh agentkit migrate\` first if you are importing tasks.
+EOF
+)"
+}
+
+# ---- upgrade ----------------------------------------------------------------
+
+cmd_upgrade() {
+  local repo=${1:?owner/repo}
+  setup_labels "$repo"
+  setup_board "$repo"
+  local def; def=$(gh repo view "$repo" --json defaultBranchRef --jq .defaultBranchRef.name)
+  local tmp; tmp=$(mktemp -d -t agentkit-upgrade)
+  gh repo clone "$repo" "$tmp/repo" -- --depth 1 --branch "$def" -q
+  cd "$tmp/repo"
+  local branch; branch=agentkit/upgrade-$(date -u +%Y%m%d%H%M)
+  git switch -q -c "$branch"
+  local caller=.github/workflows/agentkit.yml
+  apply_templates "$repo"  # adds the caller itself when the repo has none
+  if ! printf '%s\n' ${ADDED[@]+"${ADDED[@]}"} | grep -qx "$caller"; then
+    python3 "$HERE/caller.py" <(fill "$repo" <"$KIT/templates/$caller") "$caller" >"$caller.new" && mv "$caller.new" "$caller"
+  fi
+  git add -A
+  if git diff --cached --quiet; then say "caller and kit files already up to date — no PR"; return; fi
+  git commit -q -m "chore: upgrade agentkit" -m "Syncs the caller workflow with the kit template and adds kit files this repo lacks."
+  git push -q -u origin "$branch"
+  local kit_ref; kit_ref=$(git -C "$KIT" describe --tags --always 2>/dev/null || echo unknown)
+  gh pr create --repo "$repo" --base "$def" --head "$branch" --title "chore: upgrade agentkit ($kit_ref)" --body "$(cat <<EOF
+Syncs this repo with agentkit $kit_ref. Labels and board stages are already updated.
+
+- \`$caller\`: triggers and kit jobs from the template; this repo's \`with:\` blocks, \`uses:\` refs and extra jobs kept
+$( [ ${#ADDED[@]} -gt 0 ] && printf -- '- `%s` added\n' "${ADDED[@]}")
+
+Review the caller diff, then merge. Existing files other than the caller and \`.claude/settings.json\` are never changed.
+EOF
+)"
+}
+
+# ---- doctor -----------------------------------------------------------------
+
+cmd_doctor() {
+  local repo=${1:?owner/repo}
+  local owner fail=0; owner=$(owner_of "$repo")
+  ok() { echo "  ok    $*"; }
+  bad() { echo "  FAIL  $*"; fail=1; }
+  warn() { echo "  warn  $*"; }
+  local info; info=$(gh repo view "$repo" --json defaultBranchRef,isPrivate)
+  local def; def=$(jq -r .defaultBranchRef.name <<<"$info")
+  echo "agentkit doctor: $repo"
+
+  gh api "repos/$repo/contents/.github/workflows/agentkit.yml?ref=$def" >/dev/null 2>&1 \
+    && ok "caller workflow on $def" || bad "no .github/workflows/agentkit.yml on $def (run init and merge its PR)"
+  gh api "repos/$repo/contents/.claude/settings.json?ref=$def" --jq .content 2>/dev/null | base64 -d 2>/dev/null \
+    | jq -e '.enabledPlugins["agentkit@agentkit"] == true' >/dev/null 2>&1 \
+    && ok "plugin enabled in .claude/settings.json" || bad "plugin not enabled in .claude/settings.json"
+  gh api "repos/$repo/contents/.agentkit/test.sh?ref=$def" --jq .content 2>/dev/null | base64 -d 2>/dev/null | grep -q TODO \
+    && warn ".agentkit/test.sh is still the TODO stub — integration check passes vacuously" || true
+
+  local have; have=$(gh label list --repo "$repo" --limit 200 --json name --jq '.[].name')
+  local missing=0
+  for l in "${LABELS[@]}"; do grep -qx "${l%%|*}" <<<"$have" || { bad "label ${l%%|*} missing"; missing=1; }; done
+  [ $missing -eq 0 ] && ok "labels"
+
+  local secrets; secrets=$(gh secret list --repo "$repo" --json name --jq '.[].name' 2>/dev/null; gh secret list --org "$owner" --json name --jq '.[].name' 2>/dev/null || true)
+  for s in AGENTKIT_APP_KEY CLAUDE_CODE_OAUTH_TOKEN; do grep -qx "$s" <<<"$secrets" && ok "secret $s" || bad "secret $s missing (gh agentkit secrets $repo)"; done
+  for v in AGENTKIT_CLIENT_ID AGENTKIT_PROJECT; do [ -n "$(var_get "$repo" "$v")" ] && ok "variable $v" || bad "variable $v missing"; done
+
+  local num; num=$(var_get "$repo" AGENTKIT_PROJECT)
+  if [ -n "$num" ]; then
+    gh project field-list "$num" --owner "$owner" --format json --jq '.fields[].name' 2>/dev/null | grep -qx Stage \
+      && ok "board #$num has a Stage field" || bad "board #$num missing or has no Stage field (gh auth refresh -s project?)"
+    local have_st; have_st=$(gh project field-list "$num" --owner "$owner" --format json --jq '.fields[]|select(.name=="Stage")|.options[].name' 2>/dev/null)
+    local miss_st; miss_st=$(tr ',' '\n' <<<"$STAGES" | grep -vxF -f <(printf '%s\n' "$have_st") | paste -sd, - || true)
+    [ -z "$miss_st" ] && ok "board stages" || warn "board missing stages: $miss_st (gh agentkit upgrade $repo)"
+  fi
+
+  if [ -s "$CONF/app.pem" ] && [ -s "$CONF/client-id" ]; then
+    curl -fsS -H "Authorization: Bearer $(app_jwt)" -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/repos/$repo/installation" >/dev/null 2>&1 \
+      && ok "App installed on $repo" || bad "App not installed on $repo"
+  else
+    warn "no local App key — skipped the App installation check"
+  fi
+
+  local runner; runner=$(var_get "$repo" AGENTKIT_RUNNER)
+  if [ "$(jq -r .isPrivate <<<"$info")" = true ] && [ -n "$runner" ]; then
+    local online
+    if online=$(gh api "orgs/$owner/actions/runners" --jq "[.runners[]|select(.status==\"online\" and ([.labels[].name]|index(\"$runner\")))]|length" 2>/dev/null); then
+      [ "$online" -gt 0 ] && ok "$online runner(s) online with label $runner" || bad "no online runner with label $runner (jobs will queue)"
+    else
+      warn "cannot list org runners (needs admin:org: gh auth refresh -s admin:org)"
+    fi
+  else
+    warn "jobs use GitHub-hosted runners (AGENTKIT_RUNNER unset or repo public)"
+  fi
+
+  gh api "repos/$repo/branches/$def/protection" >/dev/null 2>&1 && ok "$def is protected" || warn "$def is not protected (merging stays manual)"
+  [ $fail -eq 0 ] && echo "all checks passed" || { echo "some checks failed"; return 1; }
+}
+
+case ${1:-} in
+  app-create) shift; cmd_app_create "$@";;
+  app-convert) shift; cmd_app_convert "$@";;
+  secrets) shift; cmd_secrets "$@";;
+  setup) shift; cmd_setup "$@";;
+  init) shift; cmd_init "$@";;
+  upgrade) shift; cmd_upgrade "$@";;
+  doctor) shift; cmd_doctor "$@";;
+  ""|-h|--help|help) usage;;
+  *) usage; exit 1;;
+esac

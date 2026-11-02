@@ -1,0 +1,24 @@
+name: Bug
+description: Something is broken
+labels: ["type:bug", "status:backlog"]
+body:
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ] A test reproduces the bug and now passes
+    validations:
+      required: true

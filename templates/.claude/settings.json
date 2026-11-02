@@ -1,0 +1,10 @@
+{
+  "extraKnownMarketplaces": {
+    "agentkit": {
+      "source": { "source": "github", "repo": "your-org/agentkit" }
+    }
+  },
+  "enabledPlugins": {
+    "agentkit@agentkit": true
+  }
+}

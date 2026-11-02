@@ -1,0 +1,203 @@
+# Implementer: runs on status:in-progress (new work) and status:changes-requested
+# (review fix round). Claude edits and commits with a read-only token; this
+# workflow pushes, opens or updates the PR, and moves the issue to status:review.
+name: agentkit-implement
+
+on:
+  workflow_call:
+    inputs:
+      agentkit-ref:
+        description: Override the kit commit, branch or tag to load scripts and the plugin from (default — the commit the caller's `uses:` resolved to)
+        type: string
+        default: ""
+      model:
+        description: Claude model for every agent in this workflow
+        type: string
+        default: claude-opus-5-5
+      plugins:
+        description: Extra plugins next to the built-in ponytail (minimal code) and caveman (terse prose) (newline list of NAME@MARKETPLACE — `agentkit` for the kit's pinned externals, or the name in this repo's .claude-plugin/marketplace.json)
+        type: string
+        default: ""
+      max-turns:
+        type: number
+        default: 100
+    secrets:
+      AGENTKIT_APP_KEY:
+        required: true
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  implement:
+    # private repos use the self-hosted runner once AGENTKIT_RUNNER is set; public repos never do
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    permissions:
+      contents: read  # checkout; pushes use the App token
+    concurrency:
+      group: agentkit-issue-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    env:
+      REPO: ${{ github.repository }}
+      N: ${{ github.event.issue.number }}
+      TITLE: ${{ github.event.issue.title }}
+      MODE: ${{ github.event.label.name == 'status:changes-requested' && 'fix' || 'new' }}
+    steps:
+      - id: write
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+
+      # what Claude gets: can read the repo and comment, cannot push
+      - id: read
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: read
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # the kit's plugin, scripts and actions, from the repo and commit this workflow itself was loaded from
+      # (the caller's `uses:`), so no owner or ref is written down anywhere in the kit
+      - name: Load agentkit
+        id: kit
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: implement.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          # ponytail: anonymous fetch, so the kit repo must be public; add token auth for a private fork
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+          if [ -d .git ]; then echo .agentkit-kit/ >>.git/info/exclude; fi
+          # a project marketplace (.claude-plugin/marketplace.json) adds the project's own pinned plugins
+          if [ -f .claude-plugin/marketplace.json ]; then echo "project-marketplace=$GITHUB_WORKSPACE" >>"$GITHUB_OUTPUT"; fi
+
+      # only act on issues written by people with write access or by agentkit itself;
+      # an untrusted author fails here and the issue goes to status:needs-human
+      - uses: ./.agentkit-kit/.github/actions/trusted
+        with:
+          logins: ${{ github.event.issue.user.login }}
+          token: ${{ steps.write.outputs.token }}
+          bot: ${{ steps.write.outputs.app-slug }}[bot]
+          require-all: "true"
+
+      - name: Select branch
+        id: branch
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          BASE: ${{ vars.AGENTKIT_BASE || github.event.repository.default_branch }}
+        run: |
+          slug=$(tr '[:upper:]' '[:lower:]' <<<"$TITLE" | tr -cs 'a-z0-9' '-' | cut -c1-40 | sed 's/-*$//')
+          # via the API: checkout ran with persist-credentials: false, so git cannot reach a private remote
+          existing=$(gh api "repos/$REPO/git/matching-refs/heads/agent/$N-" --jq '.[0].ref // empty' | sed 's#refs/heads/##')
+          branch=${existing:-agent/$N-$slug}
+          if [ -n "$existing" ]; then git checkout -B "$branch" "origin/$branch"; else git checkout -B "$branch" "origin/$BASE"; fi
+          git config user.name "${{ steps.write.outputs.app-slug }}[bot]"
+          git config user.email "${{ steps.write.outputs.app-slug }}[bot]@users.noreply.github.com"
+          {
+            echo "name=$branch"
+            echo "base=$BASE"
+            echo "start=$(git rev-parse HEAD)"
+          } >>"$GITHUB_OUTPUT"
+
+      # fix round: hand the reviewers' findings over as a file; Claude's read-only token cannot read PR checks
+      - name: Collect review feedback
+        if: env.MODE == 'fix'
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          BRANCH: ${{ steps.branch.outputs.name }}
+        run: |
+          mkdir -p .agentkit-feedback && echo .agentkit-feedback/ >>.git/info/exclude
+          pr=$(gh pr view "$BRANCH" --repo "$REPO" --json number --jq .number)
+          {
+            echo "# Review feedback on PR #$pr"
+            echo; echo "## PR comments"
+            gh api --paginate "repos/$REPO/issues/$pr/comments" --jq '.[] | "\n### \(.user.login)\n\n\(.body)\n"'
+            echo; echo "## Inline review comments"
+            gh api --paginate "repos/$REPO/pulls/$pr/comments" --jq '.[] | "\n### \(.user.login) on \(.path):\(.line // .original_line)\n\n\(.body)\n"'
+          } >.agentkit-feedback/review.md
+          wc -c .agentkit-feedback/review.md
+
+      - id: claude
+        uses: anthropics/claude-code-action@v1
+        env:
+          AGENTKIT_BASE: origin/${{ steps.branch.outputs.base }}  # the docs Stop hook diffs against this
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.read.outputs.token }}
+          # the dispatcher (our App) applies the label that starts this run; the trust step above vets the issue author
+          allowed_bots: ${{ steps.write.outputs.app-slug }}
+          plugin_marketplaces: |
+            ${{ github.workspace }}/.agentkit-kit
+            ${{ steps.kit.outputs.project-marketplace }}
+          plugins: |
+            agentkit@agentkit
+            ponytail@agentkit
+            caveman@agentkit
+            ${{ inputs.plugins }}
+          prompt: |
+            Repository ${{ github.repository }}, issue #${{ github.event.issue.number }}, mode: ${{ env.MODE }}.
+            You are on branch ${{ steps.branch.outputs.name }} (base ${{ steps.branch.outputs.base }}).
+            Use the agentkit:implement-issue skill to implement this issue.
+            If the mode is "fix", first read .agentkit-feedback/review.md (the PR's comments and inline review comments)
+            and fix every blocking finding.
+            Commit your work. Do not push, do not open a PR, do not change labels.
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns ${{ inputs.max-turns }}
+            --allowedTools Bash,Read,Edit,Write,MultiEdit,Glob,Grep,Skill,Task,TodoWrite
+
+      - name: Push and open PR
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          BRANCH: ${{ steps.branch.outputs.name }}
+          BASE: ${{ steps.branch.outputs.base }}
+          START: ${{ steps.branch.outputs.start }}
+          EXEC: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          summary=$(jq -r '[.[] | select(.type=="result")] | last | .result // ""' "$EXEC" 2>/dev/null || true)
+          if [ "$(git rev-parse HEAD)" = "$START" ]; then
+            gh issue comment "$N" --repo "$REPO" --body "agentkit: the implementer made no commits. Needs a human.
+
+          ${summary}"
+            .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error
+            exit 0
+          fi
+          body="Closes #${N}
+
+          ${summary}"
+          if gh pr view "$BRANCH" --repo "$REPO" --json number >/dev/null 2>&1; then
+            # fix round: the PR body is the current checklist the gate reads, so replace it before pushing
+            gh pr edit "$BRANCH" --repo "$REPO" --body "$body"
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${BRANCH}"
+            gh pr comment "$BRANCH" --repo "$REPO" --body "agentkit fix round pushed; the PR description has the updated checklist."
+          else
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${BRANCH}"
+            gh pr create --repo "$REPO" --base "$BASE" --head "$BRANCH" --title "$TITLE" --body "$body"
+          fi
+          .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:review
+
+      - name: Hand over on failure
+        if: failure() || cancelled()
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue comment "$N" --repo "$REPO" --body "agentkit: implement run failed or timed out ($RUN). Needs a human."
+          # the kit may not have loaded if the run failed early
+          .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error \
+            || gh issue edit "$N" --repo "$REPO" --add-label status:needs-human --add-label reason:agent-error

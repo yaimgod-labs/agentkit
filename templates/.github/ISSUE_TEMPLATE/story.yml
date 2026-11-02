@@ -1,0 +1,11 @@
+name: Story / PRD
+description: A larger feature to break down with /plan
+labels: ["type:epic"]
+body:
+  - type: textarea
+    id: prd
+    attributes:
+      label: PRD
+      description: Problem, users, goals, non-goals, constraints. Comment /plan (or run /agentkit:plan locally) to slice it into issues.
+    validations:
+      required: true
