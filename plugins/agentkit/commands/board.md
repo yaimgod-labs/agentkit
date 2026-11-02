@@ -18,7 +18,7 @@ Run in one Bash call, `$T` a fresh `mktemp -d`. `REPO=$(gh repo view --json name
    closed=$(gh api "repos/$REPO/issues?state=closed&sort=updated&direction=desc&per_page=50" --jq '[.[] | select(.pull_request | not)] | sort_by(.closed_at) | reverse | map({labels: [.labels[].name], closed_at, state_reason})')
    due=$(jq -n --argjson open "$open" --argjson closed "$closed" '{open: $open, closed: $closed}' | python3 $B debt-due --every 4 --debt-label type:debt)
    ```
-4. Issues with ranks: `jq 'map(. + {rank: ($r[0][.number|tostring] // null)})' --slurpfile r $T/ranks.json $T/open.json`
+4. Issues with ranks: `jq 'map(. + {rank: ($r[0][.number|tostring] // null)})' --slurpfile r $T/ranks.json $T/open.json >$T/ranked.json`
 
 ## No argument
 
@@ -32,13 +32,13 @@ Also gather (same Bash call), then print the output of `render` exactly as it is
 
 ## `<n>`
 
-`gh issue view <n> --json title,body,labels,comments`, and the linked PR: `gh pr list --state all --search "<n> in:body" --json number,title,state,body --limit 5`, the one whose body has `Closes #<n>`. Summarize under the headings Status, What it is, Where it stands, What is needed from you. Add the estimate if `render` knows it. Latest 2 `<!-- agentkit:block -->` comments are the block reasons.
+`gh issue view <n> --json title,body,labels,comments`, and the linked PR: `gh pr list --state all --search "<n> in:body" --json number,title,state,body --limit 5`, the one whose body has `Closes #<n>`. Summarize under the headings Status, What it is, Where it stands, What is needed from you. Add its estimate: gather the closed samples as in "No argument" and run `python3 $B estimate` with `open` = `[{"number": <n>, "size": <its size: label or null>}]`; no entry means no estimate. Latest 2 `<!-- agentkit:block -->` comments are the block reasons.
 
 ## `move <n> <pos>`
 
 If `PROJ` is empty: print `no board configured: run gh agentkit setup` and change nothing. Likewise if the board has no Rank field (`gh project field-list "$PROJ" --owner "$OWNER" --format json --jq '.fields[]|select(.name=="Rank").id'` is empty): print `board has no Rank field: run gh agentkit upgrade $REPO` and stop.
 
-1. Do the common data, but only for issues labelled `status:ready`. `python3 $B order --debt-due "$due" --debt-every 4 --debt-label type:debt <issues-with-ranks.json` is the current order: ranked first, then the rest. If `<n>` is not in it (not ready, `mode:human`, `size:m` or `size:l`), say so and stop.
+1. Do the common data, but only for issues labelled `status:ready`. `python3 $B order --debt-due "$due" --debt-every 4 --debt-label type:debt <$T/ranked.json` is the current order: ranked first, then the rest. If `<n>` is not in it (not ready, `mode:human`, `size:m` or `size:l`), say so and stop.
 2. New list = the order without `<n>`, with `<n>` inserted at `<pos>` (1-based, capped at the end). `k = max(pos, ranked)`, where `ranked` is the number of issues in the list that have a rank, counting `<n>`; k is capped at the list length. Rank values `1..k` go to the first k issues of the new list, so everything above `<n>` keeps its relative order and the rest follow it. Skip an issue whose rank already equals its new value.
 3. Ids: project `gh project view "$PROJ" --owner "$OWNER" --format json --jq .id`; Rank field `gh project field-list "$PROJ" --owner "$OWNER" --format json --jq '.fields[]|select(.name=="Rank").id'`; items `gh project item-list "$PROJ" --owner "$OWNER" --limit 1000 --format json --jq '.items[]|select(.content.type=="Issue" and .content.repository=="'"$REPO"'")|{id,number:.content.number}'`. An issue not on the board yet: `gh project item-add "$PROJ" --owner "$OWNER" --url <issue url> --format json --jq .id`.
 4. Write each: `gh project item-edit --id <item-id> --project-id <project-id> --field-id <rank-field-id> --number <v>`.
@@ -46,7 +46,10 @@ If `PROJ` is empty: print `no board configured: run gh agentkit setup` and chang
 
 ## `unblock <n>`
 
-`gh issue edit <n> --remove-label status:blocked --remove-label waiting:you --add-label status:refining`. Print "#<n> unblocked: back to refining".
+This repeats `scripts/set-status.sh`'s rule (exactly one `status:*`, at most one `reason:*`) because that script ships with the kit's CI scripts, not the plugin.
+
+1. `gh issue view <n> --json labels --jq '[.labels[].name]'`. If `status:blocked` is not among them, print "#<n> is not blocked (status: <its status:* label, or none>)" and change nothing.
+2. Otherwise ONE edit: `gh issue edit <n>` with `--remove-label <l>` for every `status:*` and `reason:*` label present and for `waiting:you` if present, plus `--add-label status:refining`. Print "#<n> unblocked: back to refining".
 
 ## `done <n>`
 
