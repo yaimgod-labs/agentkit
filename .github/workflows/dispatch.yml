@@ -188,15 +188,14 @@ jobs:
           # debt quota: debt goes first when none of the last EVERY-1 issues taken into work (open ones in flight,
           # then the most recently closed) was debt, and last otherwise
           # ponytail: "recently closed" includes issues people closed by hand; track promotions if that skews it
+          # the rule itself lives in board.py (debt-due), shared with /board; this only hands it the two lists
           due=false
           if [ "$EVERY" -gt 0 ]; then
-            recent=$( { gh api "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select(.pull_request | not) | [.labels[].name]
-                          | select(any(. == "status:in-progress" or . == "status:review" or . == "status:changes-requested" or . == "status:approved" or . == "status:needs-verification"))
-                          | any(. == env.DEBT)'
-                        gh api "repos/$REPO/issues?state=closed&sort=updated&direction=desc&per_page=50" \
-                          --jq '[.[] | select((.pull_request | not) and .state_reason == "completed")] | sort_by(.closed_at) | reverse | .[] | [.labels[].name] | any(. == env.DEBT)'
-                      } | awk -v n=$((EVERY - 1)) 'NR <= n')  # awk, not head: reads all input, so no SIGPIPE under pipefail
-            grep -qx true <<<"$recent" || due=true
+            open=$(gh api "repos/$REPO/issues?state=open&per_page=100" --jq '[.[] | select(.pull_request | not) | [.labels[].name]]')
+            closed=$(gh api "repos/$REPO/issues?state=closed&sort=updated&direction=desc&per_page=50" \
+              --jq '[.[] | select(.pull_request | not)] | sort_by(.closed_at) | reverse | map({labels: [.labels[].name], closed_at, state_reason})')
+            due=$(jq -n --argjson open "$open" --argjson closed "$closed" '{open: $open, closed: $closed}' \
+              | .agentkit-kit/plugins/agentkit/scripts/board.py debt-due --every "$EVERY" --debt-label "$DEBT")
           fi
           echo "debt due: $due"
           # manual rank: the NUMBER field `Rank` on the Projects board. A board problem must never stop dispatching,

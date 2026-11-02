@@ -50,6 +50,34 @@ issues = [issue(7, "priority:low", rank=2), issue(8, "priority:high", rank=2), i
 expect("equal ranks fall back to priority", order(issues) == [8, 7, 6], order(issues))
 
 
+# test_debt_due_*: debt goes first when none of the last EVERY-1 issues taken into work was debt
+def debt_due(open_, closed, every="4", label="type:debt"):
+    return run("debt-due", "--every", every, "--debt-label", label, stdin={"open": open_, "closed": closed}).strip()
+
+
+def done(*labels, at="2026-10-01T00:00:00Z", reason="completed"):
+    return {"labels": list(labels), "closed_at": at, "state_reason": reason}
+
+
+none_debt = [["status:in-progress"], ["status:review", "priority:high"]]
+expect("debt due when none of the recent was debt",
+       debt_due(none_debt, [done(), done("type:debt")]) == "true", debt_due(none_debt, [done(), done("type:debt")]))  # test_debt_due_none_recent_is_due
+expect("debt not due when a recent one was debt (open)",
+       debt_due([["status:in-progress", "type:debt"]], [done(), done()]) == "false")  # test_debt_due_recent_debt_not_due
+expect("debt not due when a recent one was debt (closed)", debt_due([], [done(), done("type:debt"), done()]) == "false")
+expect("only the first EVERY-1 count: an older debt is out of the window", debt_due([], [done(), done(), done(), done("type:debt")]) == "true")
+expect("open issues fill the window before closed ones",
+       debt_due([["status:approved"], ["status:needs-verification"], ["status:review"]], [done("type:debt")]) == "true"
+       and debt_due([["status:approved"], ["status:needs-verification"]], [done("type:debt")]) == "false")
+expect("open issues not in flight are ignored", debt_due([["status:ready", "type:debt"], ["status:blocked", "type:debt"]], []) == "true")
+expect("closed as not planned is ignored", debt_due([], [done("type:debt", reason="not_planned")]) == "true")
+expect("another debt label", debt_due([], [done("chore")], label="chore") == "false" and debt_due([], [done("chore")]) == "true")
+expect("nothing taken into work yet is due", debt_due([], []) == "true")
+expect("debt every 0 is never due",
+       debt_due(none_debt, [done()], every="0") == "false" and debt_due([], [], every="0") == "false")  # test_debt_due_every_zero
+expect("debt every 1 is always due (window is empty)", debt_due([["status:in-progress", "type:debt"]], [done("type:debt")], every="1") == "true")
+
+
 # test_estimate_percentiles
 def est(closed, open_):
     return json.loads(run("estimate", stdin={"closed": closed, "open": open_}))

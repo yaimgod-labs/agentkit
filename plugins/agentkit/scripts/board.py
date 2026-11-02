@@ -16,6 +16,16 @@ board calls "Up next" is exactly what the dispatcher takes next.
         number
       A missing "rank" is the same as null. With no rank anywhere this is the dispatcher's order from before ranks.
 
+  board.py debt-due --every N --debt-label L
+      stdin:  {"open": [["status:in-progress", "type:debt", ...], ...],
+               "closed": [{"labels": [...], "closed_at": ISO, "state_reason": "completed"}, ...]}
+      stdout: `true` or `false`: whether debt goes first now (the `--debt-due` input of `order`).
+      "open" is the label names of every open issue (not pull requests); this script keeps the ones in flight
+      (in-progress, review, changes-requested, approved, needs-verification). "closed" is the caller's closed issues,
+      newest closed_at first; this script keeps the completed ones, in the order given.
+      The window is the first EVERY-1 issues taken into work: the in-flight open ones, then the most recently closed.
+      Due when none of them has the debt label. With --every 0 the quota is off and the answer is `false`.
+
   board.py estimate
       stdin:  {"closed": [{"size": "s", "started_at": ISO, "closed_at": ISO}, ...], "open": [{"number": 7, "size": "s"}, ...]}
       stdout: {"7": "~3h–6h" | "~2–4 days" | default, ...} as JSON.
@@ -42,6 +52,7 @@ from datetime import datetime
 DEFAULT_ESTIMATE = {"xs": "<1h", "s": "≤1 day", "m": "several days", "l": "an epic"}
 MIN_SAMPLES, MAX_SAMPLES = 5, 20
 UP_NEXT = 5
+DEBT_WINDOW_STATUS = ("status:in-progress", "status:review", "status:changes-requested", "status:approved", "status:needs-verification")
 
 WAITING = ("status:needs-info", "status:needs-human", "status:needs-verification", "status:needs-approval")
 IN_PROGRESS = ("status:in-progress", "status:review", "status:changes-requested", "status:approved", "status:refining")
@@ -64,6 +75,14 @@ def sort_key(issue, due, every, debt):
 def order(issues, due=False, every=0, debt="type:debt"):
     kept = [i for i in issues if not any(l in ("mode:human", "size:m", "size:l") for l in i.get("labels") or [])]
     return sorted(kept, key=lambda i: sort_key(i, due, every, debt))
+
+
+def debt_due(doc, every, debt):
+    if every <= 0:
+        return False
+    flight = [l for l in doc.get("open") or [] if any(x in DEBT_WINDOW_STATUS for x in l)]
+    done = [c.get("labels") or [] for c in doc.get("closed") or [] if c.get("state_reason") == "completed"]
+    return not any(debt in l for l in (flight + done)[:every - 1])
 
 
 def hours(sample):
@@ -154,6 +173,9 @@ def main():
     po.add_argument("--debt-due", choices=("true", "false"), default="false")
     po.add_argument("--debt-every", type=int, default=0)
     po.add_argument("--debt-label", default="type:debt")
+    pd = sub.add_parser("debt-due")
+    pd.add_argument("--every", type=int, default=0)
+    pd.add_argument("--debt-label", default="type:debt")
     sub.add_parser("estimate")
     sub.add_parser("render")
     args = p.parse_args()
@@ -162,6 +184,8 @@ def main():
     doc = json.load(sys.stdin)
     if args.cmd == "order":
         print(json.dumps(order(doc, args.debt_due == "true", args.debt_every, args.debt_label), separators=(",", ":")))
+    elif args.cmd == "debt-due":
+        print("true" if debt_due(doc, args.every, args.debt_label) else "false")
     elif args.cmd == "estimate":
         print(json.dumps(estimate(doc)))
     else:
