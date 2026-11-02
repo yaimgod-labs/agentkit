@@ -157,10 +157,22 @@ jobs:
       - name: Verdict
         env:
           OUT: ${{ steps.claude.outputs.structured_output }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          KIND: ${{ matrix.kind }}
         run: |
           verdict=$(jq -r '.verdict // "fail"' <<<"${OUT:-{\}}")
-          jq -r '.summary // "no summary"' <<<"${OUT:-{\}}" >>"$GITHUB_STEP_SUMMARY"
+          summary=$(jq -r '.summary // "no summary: the reviewer returned no verdict"' <<<"${OUT:-{\}}")
+          printf '%s\n' "$summary" >>"$GITHUB_STEP_SUMMARY"
           echo "verdict: $verdict"
+          # check runs from Actions carry no text: the implementer's fix round reads the blocking findings here
+          if [ "$verdict" != pass ]; then
+            gh pr comment "$PR" --repo "$REPO" --body "<!-- agentkit:review-$KIND -->
+          **agentkit $KIND review failed**
+
+          $summary"
+          fi
           [ "$verdict" = "pass" ]
 
   integration:
@@ -361,6 +373,7 @@ jobs:
           EVENT_SHA: ${{ github.event.pull_request.head.sha || github.event.check_run.head_sha || github.event.sha }}
           NEEDS: ${{ toJSON(needs) }}
           EXTERNAL: ${{ inputs.external-checks }}
+          SUITES: ${{ inputs.suites }}
           TIMEOUT: ${{ inputs.check-timeout }}
           AUTO_MERGE: ${{ vars.AUTO_MERGE }}
           MAX_ROUNDS: ${{ inputs.max-rounds }}
@@ -370,10 +383,18 @@ jobs:
           if jq -e 'any(.[]; .result == "cancelled")' <<<"$NEEDS" >/dev/null; then exit 0; fi
           C=.agentkit-kit/scripts/checks.py
           judge() {
-            local pr=$1 head sha n files required doc out verdict unmet human failed
-            read -r head sha < <(gh pr view "$pr" --repo "$REPO" --json headRefName,headRefOid --jq '"\(.headRefName) \(.headRefOid)"')
+            local pr=$1 head sha mergeable n files required doc out verdict unmet human failed
+            read -r head sha mergeable < <(gh pr view "$pr" --repo "$REPO" --json headRefName,headRefOid,mergeable --jq '"\(.headRefName) \(.headRefOid) \(.mergeable)"')
             n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$head")
             [ -n "$n" ] || return 0
+            # a PR that conflicts with its base gets no pull_request runs: send it back to the implementer,
+            # which merges the base first. Not a failed round; a person's needs-human stays theirs
+            if [ "$mergeable" = CONFLICTING ]; then
+              gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qxE 'status:(review|approved|needs-verification)' || return 0
+              gh pr comment "$pr" --repo "$REPO" --body "agentkit: this PR conflicts with its base branch. Sending back to the implementer to merge the base and resolve the conflicts."
+              .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:changes-requested
+              return 0
+            fi
             # a newer push has its own run. Decide once: late results only move an issue still in review;
             # a push (a person's, too) re-gates an approved PR
             if [ "$EVENT" = pull_request ] && [ "$sha" != "$EVENT_SHA" ]; then return 0; fi
@@ -382,7 +403,10 @@ jobs:
             gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qxE "$ok" || return 0
             set_status() { .agentkit-kit/scripts/set-status.sh "$REPO" "$n" "$@"; }
             files=$(gh api --paginate "repos/$REPO/pulls/$pr/files" --jq '.[].filename')
-            required=$(python3 "$C" select "$EXTERNAL" <<<"$files" | jq -c '[.[].name]')
+            # the kit's own checks must report too, so a commit no review ran on never passes
+            required=$( { python3 "$C" select "$EXTERNAL" <<<"$files"; python3 "$C" select "$SUITES" <<<"$files"; } \
+              | jq -sc --arg suites "$SUITES" '[.[0][].name, "review (code)", "review (security)", "docs"]
+                  + (if $suites == "" then ["integration"] else [.[1][] | "integration (\(.name))"] end)')
             local since statuses polls=0
             since=$(gh api "repos/$REPO/commits/$sha" --jq .commit.committer.date)
             while :; do

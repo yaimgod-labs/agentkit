@@ -7,7 +7,8 @@
       matches `/`, so `server/**` and `server/*` both cover everything under server/.
   checks.py gate < {"check_runs", "statuses", "required", "since", "now", "timeout"}
       check_runs and statuses as the GitHub API returns them for one commit; required: names that must
-      report; since/now: ISO times; timeout: minutes a check may stay pending or missing.
+      report (a name also matches "<caller job> / <name>"); since/now: ISO times; timeout: minutes a
+      check may stay pending or missing.
       Prints {"verdict": pass|fail|wait|timeout, "failed": [{name, detail}], "pending": [names]}.
 """
 import fnmatch
@@ -55,7 +56,8 @@ def gate(doc):
             pending.append(s["context"])
         elif s["state"] in ("failure", "error"):
             failed.append({"name": s["context"], "detail": f"{s['state']}: {s.get('description') or 'no description'}{link(s.get('target_url'))}"})
-    pending += [n for n in doc.get("required", []) if n not in seen]
+    # a required name is a check name, or a job name under a caller job ("review / docs" reports "docs")
+    pending += [n for n in doc.get("required", []) if not any(s == n or s.endswith(" / " + n) for s in seen)]
     if failed:
         verdict = "fail"
     elif pending:

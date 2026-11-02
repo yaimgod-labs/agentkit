@@ -179,6 +179,9 @@ jobs:
           if [ -n "$existing" ]; then git checkout -B "$branch" "origin/$branch"; else git checkout -B "$branch" "origin/$BASE"; fi
           git config user.name "${{ steps.write.outputs.app-slug }}[bot]"
           git config user.email "${{ steps.write.outputs.app-slug }}[bot]@users.noreply.github.com"
+          # an existing branch may be behind its base (other PRs merged since), and a PR that conflicts with its
+          # base gets no review runs: merge the base in now. Conflicts stay in the tree for Claude to resolve
+          if [ -n "$existing" ]; then git merge --no-edit "origin/$BASE" || echo "::notice::merging $BASE stopped on conflicts"; fi
           {
             echo "name=$branch"
             echo "base=$BASE"
@@ -193,13 +196,27 @@ jobs:
           BRANCH: ${{ steps.branch.outputs.name }}
         run: |
           mkdir -p .agentkit-feedback && echo .agentkit-feedback/ >>.git/info/exclude
-          pr=$(gh pr view "$BRANCH" --repo "$REPO" --json number --jq .number)
+          read -r pr sha < <(gh pr view "$BRANCH" --repo "$REPO" --json number,headRefOid --jq '"\(.number) \(.headRefOid)"')
           {
             echo "# Review feedback on PR #$pr"
             echo; echo "## PR comments"
             gh api --paginate "repos/$REPO/issues/$pr/comments" --jq '.[] | "\n### \(.user.login)\n\n\(.body)\n"'
+            echo; echo "## Reviews"
+            gh api --paginate "repos/$REPO/pulls/$pr/reviews" --jq '.[] | select((.body // "") != "") | "\n### \(.user.login) (\(.state))\n\n\(.body)\n"'
             echo; echo "## Inline review comments"
             gh api --paginate "repos/$REPO/pulls/$pr/comments" --jq '.[] | "\n### \(.user.login) on \(.path):\(.line // .original_line)\n\n\(.body)\n"'
+            # check runs from Actions carry no text, so a failed test job's reason is only in its log:
+            # the 60 lines up to its last ##[error] (the log's real end is post-job cleanup)
+            echo; echo "## Failed jobs (log lines up to the error)"
+            gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" \
+              --jq '.check_runs[] | select(.app.slug == "github-actions" and .conclusion == "failure" and (.name | test("review \\((code|security)\\)$|gate$") | not)) | "\(.id) \(.name)"' \
+              | while read -r id name; do
+                  echo; echo "### $name"; echo '```'
+                  { gh api "repos/$REPO/actions/jobs/$id/logs" </dev/null || echo "(log not available)"; } \
+                    | sed -E 's/^[0-9-]+T[0-9:.]+Z //; s/\x1b\[[0-9;]*m//g' \
+                    | awk '{l[NR] = $0} /^##\[error\]/ {e = NR} END {if (!e) e = NR; for (i = (e > 60 ? e - 59 : 1); i <= e; i++) print l[i]}'
+                  echo '```'
+                done
           } >.agentkit-feedback/review.md
           wc -c .agentkit-feedback/review.md
 
@@ -224,8 +241,10 @@ jobs:
             Repository ${{ github.repository }}, issue #${{ github.event.issue.number }}, mode: ${{ env.MODE }}.
             You are on branch ${{ steps.branch.outputs.name }} (base ${{ steps.branch.outputs.base }}).
             Use the agentkit:implement-issue skill to implement this issue.
-            If the mode is "fix", first read .agentkit-feedback/review.md (the PR's comments and inline review comments)
-            and fix every blocking finding.
+            If `git status` shows unmerged paths, merging the base branch into yours stopped on conflicts: resolve them
+            first, keeping the intent of both sides, run the tests, and commit the merge.
+            If the mode is "fix", first read .agentkit-feedback/review.md (the PR's comments, reviews, inline review
+            comments and the end of each failed job's log) and fix every blocking finding.
             Commit your work. Do not push, do not open a PR, do not change labels.
           claude_args: >-
             --model ${{ inputs.model }}
