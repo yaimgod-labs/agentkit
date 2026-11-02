@@ -203,7 +203,12 @@ apply_templates() {
   done < <(find "$KIT/templates" -type f | sort)
   # merge the plugin into an existing .claude/settings.json instead of skipping it
   if printf '%s\n' ${SKIPPED[@]+"${SKIPPED[@]}"} | grep -qx .claude/settings.json; then
-    jq -s '.[0] * .[1]' .claude/settings.json <(fill "$repo" <"$KIT/templates/.claude/settings.json") >.claude/settings.json.new
+    # an older name for this kit's marketplace (same repo) is renamed to the template's, plugins included
+    jq -s --arg kit "$KIT_REPO" '.[0] as $p | .[1] as $t
+      | [($p.extraKnownMarketplaces // {}) | to_entries[] | select(.key as $k | .value.source.repo == $kit and ($t.extraKnownMarketplaces | has($k) | not)) | .key] as $old
+      | $p | .extraKnownMarketplaces |= with_entries(select(.key as $k | $old | index($k) | not))
+      | .enabledPlugins |= with_entries(.key |= (split("@") as $s | if ($old | index($s[1])) then "\($s[0])@agentkit" else . end))
+      | . * $t' .claude/settings.json <(fill "$repo" <"$KIT/templates/.claude/settings.json") >.claude/settings.json.new
     if cmp -s .claude/settings.json.new .claude/settings.json; then rm .claude/settings.json.new
     else mv .claude/settings.json.new .claude/settings.json && ADDED+=(".claude/settings.json (merged)"); fi
   fi
