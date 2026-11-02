@@ -396,7 +396,7 @@ jobs:
               out=$(python3 "$C" gate <<<"$doc")
               verdict=$(jq -r .verdict <<<"$out")
               # ponytail: on a push, poll ~5 min for checks still running; later results come by event or the sweep
-              [ "$verdict" = wait ] && [ "$EVENT" = pull_request ] && [ $((polls += 1)) -le 10 ] || break
+              if [ "$verdict" != wait ] || [ "$EVENT" != pull_request ] || [ $((polls += 1)) -gt 10 ]; then break; fi
               sleep 30
             done
             # the implementer's own checklist in the PR body: an unticked criterion is a failed round;
