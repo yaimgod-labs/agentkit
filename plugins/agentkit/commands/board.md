@@ -67,7 +67,7 @@ If `PROJ` is empty: print `no board configured: run gh agentkit setup` and chang
 This repeats `scripts/set-status.sh`'s rule (exactly one `status:*`, at most one `reason:*`) because that script ships with the kit's CI scripts, not the plugin.
 
 1. `gh issue view <n> --json labels --jq '[.labels[].name]'`. If `status:blocked` is not among them, print "#<n> is not blocked (status: <its status:* label, or none>)" and change nothing.
-2. Otherwise ONE edit: `gh issue edit <n>` with `--remove-label <l>` for every `status:*` label present except `status:refining`, every `reason:*` label and `waiting:you` if present, plus `--add-label status:refining` unless it is already there. Print "#<n> unblocked: back to refining".
+2. Otherwise ONE edit: `gh issue edit <n>` with `--remove-label <l>` for every `status:*` label present except `status:refining`, every `reason:*` label and `action:required` if present, plus `--add-label status:refining` unless it is already there. Print "#<n> unblocked: back to refining".
 
 A dropped dependency's block comment stays on the issue, and that comment is what tells the dispatcher the person has seen it, so the dropped blocker no longer holds the issue.
 
