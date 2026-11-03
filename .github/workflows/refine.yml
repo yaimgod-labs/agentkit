@@ -174,7 +174,23 @@ jobs:
             echo "::error::no valid VERDICT line in the refiner's answer: ${verdict:-none}"
             exit 1
           fi
-          gh issue comment "$N" --repo "$REPO" --body "$(grep -v '^VERDICT: ' <<<"$result")"
+          status=$(jq -r .status <<<"$verdict")
+          # Claude Code + Slack mode: the verdict's optional research key (1-3 questions; ask.py validates it and warns
+          # on a bad one) files each question as a research issue, and the issue waits on them (status:blocked)
+          # instead of taking the verdict's status. Outside the mode the key is ignored.
+          research=
+          if [ "$AGENTKIT_INTERFACE" = claude-slack ]; then research=$(python3 .agentkit-kit/scripts/ask.py research <<<"$verdict"); fi
+          body=$(grep -v '^VERDICT: ' <<<"$result" || true)
+          # in the mode a comment that leaves the issue waiting on a person (action:required) ends with how to answer
+          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] \
+             && { [ "$status" = needs-info ] || jq -e '.status == "ready" and .mode == "human"' <<<"$verdict" >/dev/null; }; then
+            closing="Answer with the Comment button on this issue's card in Slack."
+            if grep -q '^## Questions' <<<"$body"; then
+              closing="Reply with an answer, \`research <what to find out>\`, or \`block <reason>\`."$'\n'"$closing"
+            fi
+            body+=$'\n\n'"$closing"
+          fi
+          printf '%s\n' "$body" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
           new=$(jq -r '"size:\(.size) type:\(.type) mode:\(.mode)"' <<<"$verdict")
           args=()
           while IFS= read -r l; do
@@ -201,7 +217,13 @@ jobs:
             fi
           done < <(jq -r --argjson n "$N" '(.blocked_by // []) | unique | .[] | select(. != $n)' <<<"$verdict")
           if [ -n "$failed" ]; then gh issue comment "$N" --repo "$REPO" --body "$failed" >/dev/null || true; fi
-          status=$(jq -r .status <<<"$verdict")
+          if [ -n "$research" ]; then
+            # the kit asks, so the bot is the asker; apply-reply.sh links each issue as a blocker and sets status:blocked
+            while IFS= read -r q; do
+              AGENTKIT_BOT=$BOT .agentkit-kit/scripts/apply-reply.sh "$REPO" "$N" research "$q" "$BOT" </dev/null
+            done <<<"$research"
+            exit 0
+          fi
           .agentkit-kit/scripts/set-status.sh "$REPO" "$N" "status:$status"
           if [ "$status" = needs-info ] && [ "$SENDER" != "$BOT" ]; then
             gh issue edit "$N" --repo "$REPO" --add-assignee "$SENDER" >/dev/null || true  # assignee must be a collaborator

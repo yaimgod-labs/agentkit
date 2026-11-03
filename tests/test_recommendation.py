@@ -61,6 +61,8 @@ out = run("research", RESEARCH)
 expect("research: the Answer section, to the end of the doc", out == "> Yes, within 2s (high confidence).\n", out)
 out = run("research", RESEARCH.replace("## Answer", "## 3. **Conclusion**"))
 expect("research: a numbered, bold Conclusion heading", out == "> Yes, within 2s (high confidence).\n", out)
+out = run("research", "# Q\n\n## Recommendations considered\nnot this\n\n## Answer\nUse B (medium confidence).\n")
+expect("research: an Answer heading wins over an earlier Recommend one", out == "> Use B (medium confidence).\n", out)
 
 out = run("research", "---\ntitle: x\n---\n\nIt works.\n\nUse it.\n")
 expect("no matching heading: the whole doc without front matter", out == "> It works.\n>\n> Use it.\n", out)

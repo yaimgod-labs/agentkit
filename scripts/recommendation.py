@@ -6,7 +6,8 @@ Python 3.9+, stdlib only.
       Prints the doc's recommendation as a Markdown blockquote: every line starts with `>`, and `<!--` is escaped
       to `&lt;!--`, so the agent-written doc can never forge a kit marker or a line of the kit's comment.
       rfc: the section under the first heading that starts with "Recommend" (Recommendation, Recommended option).
-      research: the first heading that starts with "Answer", "Recommend" or "Conclusion".
+      research: the first heading that starts with "Answer" (the implement-issue skill's fixed heading); without
+      one, the first that starts with "Recommend" or "Conclusion".
       A section runs to the next heading of the same or a higher level; headings inside code fences don't count.
       No such heading, or an empty section: the whole doc, front matter dropped.
       Over MAX_CHARS (default 4000) the text is cut at a line and ends with `> …`. An empty doc prints nothing.
@@ -14,7 +15,8 @@ Python 3.9+, stdlib only.
 import re
 import sys
 
-NAMES = {"rfc": ("recommend",), "research": ("answer", "recommend", "conclusion")}
+# heading prefixes in order of preference: the first group that matches a heading wins
+NAMES = {"rfc": [("recommend",)], "research": [("answer",), ("recommend", "conclusion")]}
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 
 
@@ -56,7 +58,7 @@ def trim(lines):
 
 def recommendation(text, kind, limit=4000):
     lines = body(text.splitlines())
-    picked = trim(section(lines, NAMES[kind])) or trim(lines)
+    picked = next((s for s in (trim(section(lines, names)) for names in NAMES[kind]) if s), None) or trim(lines)
     out, size = [], 0
     for line in picked:
         line = line.rstrip().replace("<!--", "&lt;!--")

@@ -370,7 +370,11 @@ for bad in "0" "7x" ""; do
   ok "issue '$bad': exits non-zero" [ "$( : >"$FAKE_LOG"; rc "$here/../scripts/apply-reply.sh" o/r "$bad" answer x alice)" != 0 ]
   ok "issue '$bad': no calls" [ ! -s "$FAKE_LOG" ]
 done
-for bad in "" "al ice" 'a$(x)'; do
+# the kit itself starts research (refine's research key, an implementer's STUCK line) as <app-slug>[bot]
+apply research "how fast is X" "agentkit-bot[bot]"
+ok "research by the bot: creates the issue" logs '^api repos/o/r/issues --input -'
+ok "research by the bot: asked by the bot" logsF '"body":"## Question\n> how fast is X\n\nAsked by @agentkit-bot[bot] on #7.'
+for bad in "" "al ice" 'a$(x)' "[bot]" "a[bot]x" "a[bo]"; do
   ok "login '$bad': exits non-zero" [ "$(rc apply block why "$bad")" != 0 ]
   ok "login '$bad': no calls" [ ! -s "$FAKE_LOG" ]
 done

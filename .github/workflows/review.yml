@@ -535,6 +535,14 @@ jobs:
               if grep -qx type:rfc <<<"$labels"; then kind=rfc; elif grep -qx type:research <<<"$labels"; then kind=research; fi
             fi
             set_status() { .agentkit-kit/scripts/set-status.sh "$REPO" "$n" "$@"; }
+            # Claude Code + Slack mode: Slack shows the issue's card, not the PR, so a handover that waits on a person
+            # also says on the issue what is needed, with the PR's link
+            ping_issue() {
+              [ "$AGENTKIT_INTERFACE" = claude-slack ] || return 0
+              printf '%s\n' "agentkit: $1 PR: $GITHUB_SERVER_URL/$REPO/pull/$pr
+
+          Answer with the Comment button on this issue's card in Slack." | gh issue comment "$n" --repo "$REPO" --body-file - >/dev/null
+            }
             files=$(gh api --paginate "repos/$REPO/pulls/$pr/files" --jq '.[].filename')
             # the kit's own checks must report too, so a commit no review ran on never passes
             required=$( { python3 "$C" select "$EXTERNAL" <<<"$files"; python3 "$C" select "$SUITES" <<<"$files"; } \
@@ -566,6 +574,7 @@ jobs:
               timeout)
                 gh pr comment "$pr" --repo "$REPO" --body "agentkit: still no result from $(jq -r '.pending | join(", ")' <<<"$out") after $TIMEOUT minutes ($RUN). Check that these run for this branch, then re-run them or move the issue back to \`status:review\`."
                 set_status status:needs-human reason:env
+                ping_issue "checks $(jq -r '.pending | join(", ") | gsub("<!--"; "&lt;!--")' <<<"$out") gave no result after $TIMEOUT minutes. A person must check that they run for this branch and re-run them. Reply \`retry\` to send it back to the implementer."
                 return 0 ;;
               pass)
                 # an RFC with a /decide passes normally: the decision is recorded, so it merges
@@ -576,6 +585,7 @@ jobs:
                 if [ "$human" -gt 0 ]; then
                   set_status status:needs-verification
                   gh pr comment "$pr" --repo "$REPO" --body "agentkit: all checks passed. $human item(s) under **Human verification** need a person: check them (on a device, a staging build or wherever the item says) and tick the boxes in the PR description; ticking the last one approves the PR."
+                  ping_issue "all checks passed; $human item(s) under **Human verification** in the PR need a person to check them. Reply \`verified\` when they pass, or say what failed."
                   return 0
                 fi
                 set_status status:approved
@@ -593,6 +603,7 @@ jobs:
 
           $failed"
               set_status status:needs-human reason:agent-error
+              ping_issue "review round $rounds of $MAX_ROUNDS failed and the fix loop stopped; it needs a person. Reply \`retry\` for more rounds, or answer with guidance for the implementer."
             else
               gh pr comment "$pr" --repo "$REPO" --body "<!-- agentkit:round $sha -->
           agentkit: review round $rounds of $MAX_ROUNDS failed ($RUN). Sending back to the implementer.

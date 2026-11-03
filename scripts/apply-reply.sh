@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Usage: apply-reply.sh <owner/repo> <issue> <action> <arg> <login>
 # Carries out one Slack reply (Claude Code + Slack mode): <action> and <arg> come from reply.py, <login> is the person
-# who answered. Env KEYWORDS (space-separated) and FREE_TEXT (true|false, default false), both from reply.py, for
+# who answered, or the kit's bot (<app-slug>[bot]) when an agent starts research itself. Env KEYWORDS
+# (space-separated) and FREE_TEXT (true|false, default false), both from reply.py, for
 # `hint`; AGENTKIT_BOT (<app-slug>[bot]) for `approve-research`, which reads the kit's own recommendation comment.
 #   answer, unblock, split-feedback  status:refining
 #   research <q>        new type:research issue (status:refining) linked as a blocker; a block comment; status:blocked
@@ -37,7 +38,7 @@ case "$action" in
 esac
 usage() { echo "apply-reply.sh: $1" >&2; exit 2; }
 [[ $n =~ ^[1-9][0-9]*$ ]] || usage "issue must be a number, got '$n'"
-[[ $login =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || usage "invalid login '$login'"
+[[ $login =~ ^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?$ ]] || usage "invalid login '$login'"
 
 # the person's text on one line, or as a blockquote; `<!--` escaped in both
 one_line() { jq -rn --arg t "$1" '$t | gsub("<!--"; "&lt;!--") | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "")'; }

@@ -263,7 +263,8 @@ jobs:
             first, keeping the intent of both sides, run the tests, and commit the merge.
             If the mode is "fix", first read .agentkit-feedback/review.md (the PR's comments, reviews, inline review
             comments and the end of each failed job's log) and fix every blocking finding.
-            Commit your work. Do not push, do not open a PR, do not change labels.
+            Commit your work. Do not push, do not open a PR, do not change labels. If you cannot meet the acceptance
+            criteria without a person's answer or new knowledge, use the skill's stuck exit (a last `STUCK:` line).
           claude_args: >-
             --model ${{ inputs.model }}
             --max-turns ${{ inputs.max-turns }}
@@ -287,8 +288,35 @@ jobs:
           EXEC: ${{ steps.claude.outputs.execution_file }}
           PR: ${{ steps.feedback.outputs.pr }}
           SINCE: ${{ steps.feedback.outputs.since }}
+          AGENTKIT_BOT: ${{ steps.write.outputs.app-slug }}[bot]
         run: |
           summary=$(jq -r '[.[] | select(.type=="result")] | last | .result // ""' "$EXEC" 2>/dev/null || true)
+          # the implementer may stop with a last `STUCK: {...}` line (implement-issue step 10); ask.py validates it, and
+          # an invalid one counts as absent
+          stuck=$(python3 .agentkit-kit/scripts/ask.py stuck <<<"$summary")
+          if [ -n "$stuck" ] && [ "$AGENTKIT_INTERFACE" = claude-slack ]; then
+            # Claude Code + Slack mode: ask the person on the issue, or file the research, instead of a PR. Commits made
+            # so far stay on the branch, which the next implement run reuses once the answer is in
+            if [ "$(git rev-parse HEAD)" != "$START" ]; then
+              git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${BRANCH}"
+            fi
+            if [ "$(jq -r .kind <<<"$stuck")" = question ]; then
+              msg=$(python3 .agentkit-kit/scripts/ask.py message <<<"$stuck")
+              printf '%s\n' "$msg" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
+              .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-info
+            else
+              .agentkit-kit/scripts/apply-reply.sh "$REPO" "$N" research "$(jq -r .text <<<"$stuck")" "$AGENTKIT_BOT"
+            fi
+            exit 0
+          fi
+          # outside the mode a STUCK line takes today's path, its text quoted in the handover
+          note=
+          if [ -n "$stuck" ]; then
+            note="The implementer is stuck on:
+          > $(jq -r '.text | gsub("<!--"; "&lt;!--") | gsub("\\s+"; " ")' <<<"$stuck")
+
+          "
+          fi
           if [ "$(git rev-parse HEAD)" = "$START" ]; then
             # a fix round a person's "Request changes" started (submitted since the head commit), and no commits:
             # most likely the agent did not understand the review, so ask the reviewer(s) on the PR
@@ -301,13 +329,13 @@ jobs:
             if [ -n "$who" ]; then
               gh pr comment "$PR" --repo "$REPO" --body "agentkit: ${who}the implementer made no commits for your review and may need more detail. Answer by submitting another \"Request changes\" review with the details.
 
-          ${summary}"
+          ${note}${summary}"
               .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-info
               exit 0
             fi
             gh issue comment "$N" --repo "$REPO" --body "agentkit: the implementer made no commits. Needs a human.
 
-          ${summary}"
+          ${note}${summary}"
             .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error
             exit 0
           fi
