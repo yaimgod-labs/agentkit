@@ -17,11 +17,13 @@
       with write access: a Slack retry or guidance) and no earlier reset named it. Nobody else's comment counts or
       resets, a marker inside a comment (quoted check output) is not one, and an agent that can comment as the kit
       can neither invent a reset nor replay one. A bare comment list means no people.
-  checks.py decided < {"pr": [bodies], "issue": [bodies]}
+  checks.py decided < {"pr": [bodies], "issue": [{"id", "body"}], "after": id or null}
       `true` when a person decided an RFC: `pr` holds the PR's comments and `issue` the issue's comments, both
-      already limited to people with write access (never a bot). A PR comment that starts with
-      `/decide accept|reject`, or an issue comment (a Slack reply) whose first word is accept or reject. Else, or on
-      unreadable input, `false`. The kit's own relayed /decide never counts by itself.
+      already limited to people with write access (never a bot); `after` is the id of the kit's latest
+      `<!-- agentkit:recommendation -->` comment on the issue. A PR comment that starts with `/decide accept|reject`,
+      or an issue comment (a Slack reply) after the recommendation whose first word is accept or reject; with no
+      recommendation, issue comments never count. Else, or on unreadable input, `false`. The kit's own relayed
+      /decide never counts by itself.
 """
 import fnmatch
 import json
@@ -104,12 +106,17 @@ def rounds(doc, bot):
 def decided(doc):
     if not isinstance(doc, dict):
         return False
-    pr, issue = doc.get("pr", []), doc.get("issue", [])
-    if not (isinstance(pr, list) and isinstance(issue, list) and all(isinstance(b, str) for b in pr + issue)):
+    pr, issue, after = doc.get("pr", []), doc.get("issue", []), doc.get("after")
+    if not (isinstance(pr, list) and all(isinstance(b, str) for b in pr) and isinstance(issue, list)
+            and all(isinstance(c, dict) and isinstance(c.get("id"), int) and isinstance(c.get("body"), str) for c in issue)):
         return False
     if any(re.match(r"/decide (accept|reject)\b", b, re.I) for b in pr):
         return True
-    return any((b.split(None, 1) or [""])[0].rstrip(".,:!").lower() in ("accept", "reject") for b in issue)
+    # a Slack reply answers the kit's latest recommendation: only comments after it count, none without one
+    if not isinstance(after, int) or isinstance(after, bool):
+        return False
+    return any(c["id"] > after and (c["body"].split(None, 1) or [""])[0].rstrip(".,:!").lower() in ("accept", "reject")
+               for c in issue)
 
 
 def main(argv):

@@ -180,7 +180,11 @@ jobs:
           # person: without that reply by someone with write access (people.sh), the kit's /decide does nothing
           if [ "$LOGIN" = "$AGENTKIT_BOT" ]; then
             people=$(.agentkit-kit/scripts/people.sh "$REPO" "$n" "$AGENTKIT_BOT")
-            dec=$(jq -c '{pr: [], issue: [.[].body]}' <<<"$people" | python3 .agentkit-kit/scripts/checks.py decided)
+            # only a reply after the kit's latest recommendation answers it
+            recs=$(gh api --paginate "repos/$REPO/issues/$n/comments" \
+              --jq '.[] | select(.user.login == env.AGENTKIT_BOT and (.body | startswith("<!-- agentkit:recommendation -->"))) | .id')
+            after=$(tail -n 1 <<<"$recs")
+            dec=$(jq -c --argjson after "${after:-null}" '{pr: [], issue: ., after: $after}' <<<"$people" | python3 .agentkit-kit/scripts/checks.py decided)
             [ "$dec" = true ] || { echo "#$n: the kit's /decide has no person's accept or reject on the issue; ignored"; exit 0; }
           fi
           .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:changes-requested

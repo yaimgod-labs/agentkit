@@ -462,15 +462,18 @@ jobs:
           if jq -e 'any(.[]; .result == "cancelled")' <<<"$NEEDS" >/dev/null; then exit 0; fi
           C=.agentkit-kit/scripts/checks.py
           # prints whether a person decided the RFC of PR $1 (issue $2): a /decide on the PR, or a Slack accept|reject
-          # on the issue, by someone with write access (people.sh). The kit relays a Slack reply as a /decide, but an
-          # agent with a comment token posts as the kit too, so the kit's own /decide never counts by itself.
-          # A failed read returns non-zero, which fails the step instead of looking undecided
+          # on the issue after the kit's latest recommendation, by someone with write access (people.sh). The kit
+          # relays a Slack reply as a /decide, but an agent with a comment token posts as the kit too, so the kit's own
+          # /decide never counts by itself. A failed read returns non-zero, which fails the step instead of looking undecided
           decided() {
-            local on_pr on_issue
+            local on_pr on_issue recs after
             on_pr=$(.agentkit-kit/scripts/people.sh "$REPO" "$1" "$AGENTKIT_BOT") || return 1
             on_issue=$(.agentkit-kit/scripts/people.sh "$REPO" "$2" "$AGENTKIT_BOT") || return 1
-            jq -n --argjson pr "$on_pr" --argjson issue "$on_issue" '{pr: [$pr[].body], issue: [$issue[].body]}' \
-              | python3 "$C" decided
+            recs=$(gh api --paginate "repos/$REPO/issues/$2/comments" \
+              --jq '.[] | select(.user.login == env.AGENTKIT_BOT and (.body | startswith("<!-- agentkit:recommendation -->"))) | .id') || return 1
+            after=$(tail -n 1 <<<"$recs")
+            jq -n --argjson pr "$on_pr" --argjson issue "$on_issue" --argjson after "${after:-null}" \
+              '{pr: [$pr[].body], issue: $issue, after: $after}' | python3 "$C" decided
           }
           # Claude Code + Slack mode: a passing research or RFC PR waits for the person's approval on issue $n,
           # with the doc's recommendation in a comment that starts with the marker apply-reply.sh reads
@@ -594,7 +597,7 @@ jobs:
                 if [ "$AUTO_MERGE" = true ] && ! gh pr merge "$pr" --repo "$REPO" --squash --delete-branch; then
                   set_status status:needs-human reason:agent-error
                   gh pr comment "$pr" --repo "$REPO" --body "agentkit: all checks passed, but the auto-merge failed ($RUN). Needs a human: merge it, or say what is in the way."
-                  ping_issue "all checks passed, but the auto-merge failed ($RUN). A person must merge the PR, or reply \`retry\` to send it back to the implementer."
+                  ping_issue "all checks passed, but the auto-merge failed ($RUN). Merge the PR by hand once the cause is fixed, or reply \`block <reason>\`."
                 fi
                 return 0 ;;
             esac

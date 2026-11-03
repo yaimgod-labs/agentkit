@@ -103,9 +103,11 @@ expect("rounds also takes a bare comment list (no people)", r.returncode == 0 an
 r = subprocess.run([sys.executable, str(SCRIPT), "rounds"], capture_output=True, text=True, input="[]")
 expect("rounds without a bot login is a usage error", r.returncode == 2)
 
-def decided(pr=(), issue=()):
+def decided(pr=(), issue=(), after=100):
+    """issue: bodies (ids 101, 102, ... after the recommendation 100) or (id, body) pairs"""
+    iss = [{"id": c[0], "body": c[1]} if isinstance(c, tuple) else {"id": 101 + i, "body": c} for i, c in enumerate(issue)]
     r = subprocess.run([sys.executable, str(SCRIPT), "decided"], capture_output=True, text=True,
-                       input=json.dumps({"pr": list(pr), "issue": list(issue)}))
+                       input=json.dumps({"pr": list(pr), "issue": iss, "after": after}))
     assert r.returncode == 0, r.stderr
     return r.stdout.strip()
 expect("decided: nothing is undecided", decided() == "false")
@@ -118,6 +120,13 @@ expect("decided: reject, any case, trailing punctuation", decided(issue=["  Reje
 expect("decided: accept must be the first word", decided(issue=["I accept"]) == "false")
 expect("decided: acceptance is not accept", decided(issue=["acceptance tests pass"]) == "false")
 expect("decided: an issue /decide is not a Slack reply", decided(issue=["/decide accept x"]) == "false")
+# only replies to the latest recommendation count: an earlier comment that happens to start with reject is no decision
+expect("decided: a reply before the recommendation does not count",
+       decided(issue=[(40, "Reject option B, it needs a new vendor")]) == "false")
+expect("decided: a later accept does",
+       decided(issue=[(40, "Reject option B, it needs a new vendor"), (120, "accept option A")]) == "true")
+expect("decided: no recommendation, no issue reply counts", decided(issue=["accept it fits"], after=None) == "false")
+expect("decided: no recommendation, a PR /decide still counts", decided(pr=["/decide accept x"], after=None) == "true")
 for bad in ("[]", '{"pr": "x"}', '{"pr": [1]}', "nope"):
     r = subprocess.run([sys.executable, str(SCRIPT), "decided"], capture_output=True, text=True, input=bad)
     expect(f"decided: bad input {bad!r} is false", r.returncode == 0 and r.stdout.strip() == "false", r.stderr)
