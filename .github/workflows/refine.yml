@@ -208,17 +208,26 @@ jobs:
               if [ -n "$proposal" ]; then split=propose; fi
             fi
           fi
-          # in the mode a comment that leaves the issue waiting on a person (action:required) ends with how to answer
-          # (a split proposal is its own comment, with its own closing lines)
-          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] && [ -z "$split" ] \
-             && { [ "$status" = needs-info ] || jq -e '.status == "ready" and .mode == "human"' <<<"$verdict" >/dev/null; }; then
-            closing="Answer with the Comment button on this issue's card in Slack."
-            if grep -q '^## Questions' <<<"$body"; then
-              closing="Reply with an answer, \`research <what to find out>\`, or \`block <reason>\`."$'\n'"$closing"
-            fi
-            body+=$'\n\n'"$closing"
+          [ "$split" != propose ] || status=needs-approval
+          # in the mode a comment that leaves the issue waiting on a person (action:required) ends with the reply line
+          # of its status and how to answer (a split proposal and each ask are their own comments, with their own
+          # closing lines)
+          human=false
+          if jq -e '.status == "ready" and .mode == "human"' <<<"$verdict" >/dev/null; then human=true; fi
+          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] && [ -z "$split" ] && [ -z "$asks" ]; then
+            reply=
+            if [ "$status" = needs-info ]; then reply="Reply with an answer, \`research <what to find out>\`, or \`block <reason>\`."
+            elif [ "$human" = true ]; then reply="Reply \`done\` once you have finished it, or \`block <reason>\`."; fi
+            [ -z "$reply" ] || body+=$'\n\n'"$reply"$'\n'"Answer with the Comment button on this issue's card in Slack."
           fi
-          printf '%s\n' "$body" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
+          # a status that waits on a person (in the mode) is set before its comments, as Slack threads a comment under
+          # the issue's card only once action:required is there. Any other status keeps the plan first, so an issue
+          # never reaches ready (and the implementer) ahead of its plan
+          waiting=
+          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] && [ "$split" != auto ]; then
+            case "$status" in needs-info | needs-approval) waiting=1 ;; ready) [ "$human" = false ] || waiting=1 ;; esac
+          fi
+          if [ -z "$waiting" ]; then printf '%s\n' "$body" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null; fi
           new=$(jq -r '"size:\(.size) type:\(.type) mode:\(.mode)"' <<<"$verdict")
           args=()
           while IFS= read -r l; do
@@ -245,14 +254,6 @@ jobs:
             fi
           done < <(jq -r --argjson n "$N" '(.blocked_by // []) | unique | .[] | select(. != $n)' <<<"$verdict")
           if [ -n "$failed" ]; then gh issue comment "$N" --repo "$REPO" --body "$failed" >/dev/null || true; fi
-          if [ -n "$asks" ]; then
-            while IFS= read -r q; do
-              msg=$(jq -nc --arg q "$q" '{kind: "question", text: $q,
-                why: "This issue is research already, so the kit asks a person instead of filing more research.",
-                checked: "The plan above."}' | python3 .agentkit-kit/scripts/ask.py message)
-              printf '%s\n' "$msg" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
-            done <<<"$asks"
-          fi
           if [ -n "$research" ]; then
             # the kit asks, so the bot is the asker; apply-reply.sh links each issue as a blocker and sets status:blocked
             while IFS= read -r q; do
@@ -265,11 +266,19 @@ jobs:
             gh issue comment "$N" --repo "$REPO" --body "/plan" >/dev/null
             exit 0
           fi
-          if [ "$split" = propose ]; then
-            printf '%s\n' "$proposal" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
-            status=needs-approval
-          fi
           .agentkit-kit/scripts/set-status.sh "$REPO" "$N" "status:$status"
+          if [ -n "$waiting" ]; then
+            printf '%s\n' "$body" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
+            if [ -n "$asks" ]; then
+              while IFS= read -r q; do
+                msg=$(jq -nc --arg q "$q" '{kind: "question", text: $q,
+                  why: "This issue is research already, so the kit asks a person instead of filing more research.",
+                  checked: "The plan above."}' | python3 .agentkit-kit/scripts/ask.py message)
+                printf '%s\n' "$msg" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
+              done <<<"$asks"
+            fi
+            if [ "$split" = propose ]; then printf '%s\n' "$proposal" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null; fi
+          fi
           if [ "$status" = needs-info ] && [ "$SENDER" != "$BOT" ]; then
             gh issue edit "$N" --repo "$REPO" --add-assignee "$SENDER" >/dev/null || true  # assignee must be a collaborator
           fi
@@ -280,6 +289,20 @@ jobs:
           GH_TOKEN: ${{ steps.write.outputs.token }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh issue comment "$N" --repo "$REPO" --body "agentkit: refine run failed or timed out ($RUN). Needs a human."
-          .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error \
-            || gh issue edit "$N" --repo "$REPO" --add-label status:needs-human --add-label reason:agent-error
+          # the status first, then the comment: Slack threads a comment under the issue's card only once
+          # action:required is there. In the Claude Code + Slack mode the comment ends with the Comment-button line
+          if ! .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error; then
+            # the kit may not have loaded if the run failed early: by hand. In the mode also one status, one reason
+            # and action:required, so the card and the reply job see the handover
+            args=()
+            if [ "$AGENTKIT_INTERFACE" = claude-slack ]; then
+              for l in $(gh issue view "$N" --repo "$REPO" --json labels --jq '.labels[].name | select((startswith("status:") and . != "status:needs-human") or (startswith("reason:") and . != "reason:agent-error"))'); do
+                args+=(--remove-label "$l")
+              done
+              args+=(--add-label action:required)
+            fi
+            gh issue edit "$N" --repo "$REPO" ${args[@]+"${args[@]}"} --add-label status:needs-human --add-label reason:agent-error
+          fi
+          msg="agentkit: refine run failed or timed out ($RUN). Needs a human."
+          [ "$AGENTKIT_INTERFACE" != claude-slack ] || msg+=$'\n\n'"Answer with the Comment button on this issue's card in Slack."
+          printf '%s\n' "$msg" | gh issue comment "$N" --repo "$REPO" --body-file -

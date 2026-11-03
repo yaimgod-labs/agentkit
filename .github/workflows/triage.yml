@@ -20,7 +20,7 @@ permissions: {}
 jobs:
   triage:
     if: github.event_name == 'issues' && github.event.action == 'opened' && vars.AGENTKIT_INTERFACE == 'claude-slack'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     # one run per issue (only its `opened` event lands here), so a pending run is never replaced
     concurrency:
@@ -34,6 +34,8 @@ jobs:
         with:
           client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
           private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-issues: write  # the status label
+          permission-actions: read  # Load agentkit reads this run's referenced workflows
 
       # the kit's scripts and actions, from the repo and commit this workflow itself was loaded from
       # (the caller's `uses:`), so no owner or ref is written down anywhere in the kit

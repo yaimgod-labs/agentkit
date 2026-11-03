@@ -1,7 +1,7 @@
 # Dispatcher: promotes the top unblocked status:ready issue (board Rank first, then board.py's order; not mode:human, not size:m/l; one debt-label issue in every debt-every)
 # to status:in-progress while fewer than WIP issues are in flight; mirrors status
 # labels onto the board; closes the linked issue when an agent PR merges into a
-# non-default branch; approves a PR once its Human verification boxes are ticked;
+# non-default branch; approves a PR once its Human verification boxes are ticked (and merges it with AUTO_MERGE=true);
 # on a `/decide accept|reject <why>` PR comment sends the RFC back to the implementer to record it;
 # on a person's "Request changes" review sends the PR back to the implementer.
 # In the Claude Code + Slack mode it also posts "task done" to Slack when an agent PR merges.
@@ -108,8 +108,9 @@ jobs:
         run: |
           n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
           [ -n "$n" ] || exit 0
-          gh issue close "$n" --repo "$REPO" --reason completed || true  # already closed when merged into the default branch
+          # the status first, so a waiting issue never closes still labelled (Slack would post an extra card)
           .agentkit-kit/scripts/set-status.sh "$REPO" "$n" || true
+          gh issue close "$n" --repo "$REPO" --reason completed || true  # already closed when merged into the default branch
           # Claude Code + Slack mode: "task done" in the channel (the issue's title, else the PR's); never fails the step
           if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -n "$SLACK" ]; then
             title=$(gh issue view "$n" --repo "$REPO" --json title --jq .title) || title=$PR_TITLE
@@ -129,13 +130,26 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD: ${{ github.event.pull_request.head.ref }}
           BODY: ${{ github.event.pull_request.body }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTO_MERGE: ${{ vars.AUTO_MERGE }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
           [ -n "$n" ] || exit 0
           gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx status:needs-verification || exit 0
           read -r unmet human < <(printf '%s\n' "$BODY" | .agentkit-kit/scripts/checklist.sh)
           echo "#$n: $unmet unmet, $human human item(s) left"
-          if [ "$unmet" -eq 0 ] && [ "$human" -eq 0 ]; then .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:approved; fi
+          [ "$unmet" -eq 0 ] && [ "$human" -eq 0 ] || exit 0
+          .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:approved
+          # merge as the gate's pass path does: nothing else ever merges a PR approved here
+          [ "$AUTO_MERGE" = true ] || exit 0
+          gh pr merge "$PR" --repo "$REPO" --squash --delete-branch && exit 0
+          # a failed merge hands over, the status first (Slack threads the comment under the card only once
+          # action:required is there)
+          .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:needs-human reason:agent-error
+          msg="agentkit: the Human verification items of $GITHUB_SERVER_URL/$REPO/pull/$PR are ticked, but the auto-merge failed ($RUN). Needs a human: merge it, or say what is in the way."
+          [ "$AGENTKIT_INTERFACE" != claude-slack ] || msg+=$'\n\n'"Answer with the Comment button on this issue's card in Slack."
+          printf '%s\n' "$msg" | gh issue comment "$n" --repo "$REPO" --body-file -
 
       # /decide on an RFC PR: the implementer's fix round reads the PR comments, marks the RFC and writes the record
       - id: decider
@@ -155,11 +169,20 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.issue.number }}
           BODY: ${{ github.event.comment.body }}
+          LOGIN: ${{ github.event.comment.user.login }}
+          AGENTKIT_BOT: ${{ steps.app.outputs.app-slug }}[bot]
         run: |
           grep -qiE '^/decide (accept|reject)\b' <<<"$BODY" || { gh pr comment "$PR" --repo "$REPO" --body "agentkit: use \`/decide accept <why>\` or \`/decide reject <why>\`."; exit 0; }
           n=$(gh pr view "$PR" --repo "$REPO" --json headRefName --jq .headRefName | sed -nE 's#^agent/([0-9]+)-.*#\1#p')
           [ -n "$n" ] || exit 0
           gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx type:rfc || { echo "#$n is not an RFC"; exit 0; }
+          # the kit's /decide relays a person's Slack accept|reject on the issue. An agent posting as the kit is not a
+          # person: without that reply by someone with write access (people.sh), the kit's /decide does nothing
+          if [ "$LOGIN" = "$AGENTKIT_BOT" ]; then
+            people=$(.agentkit-kit/scripts/people.sh "$REPO" "$n" "$AGENTKIT_BOT")
+            dec=$(jq -c '{pr: [], issue: [.[].body]}' <<<"$people" | python3 .agentkit-kit/scripts/checks.py decided)
+            [ "$dec" = true ] || { echo "#$n: the kit's /decide has no person's accept or reject on the issue; ignored"; exit 0; }
+          fi
           .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:changes-requested
 
       # a dependency that was dropped (closed, not completed) can never unblock its dependents

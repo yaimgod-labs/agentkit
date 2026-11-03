@@ -96,7 +96,9 @@ jobs:
           arg=$(jq -r .arg <<<"$out")
           KEYWORDS=$(jq -r '.keywords | join(" ")' <<<"$out")
           FREE_TEXT=$(jq -r .free_text <<<"$out")
-          export KEYWORDS FREE_TEXT
+          # the reply's own comment id: a rounds reset names it, so the gate counts it once and only for a person
+          COMMENT_ID=$(jq -r '.comment.id' "$GITHUB_EVENT_PATH")
+          export KEYWORDS FREE_TEXT COMMENT_ID
           # the person's text is never echoed: a log line can carry workflow commands
           echo "#$N: $action"
           .agentkit-kit/scripts/apply-reply.sh "$REPO" "$N" "$action" "$arg" "$LOGIN"
@@ -108,9 +110,8 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          printf '%s\n' "agentkit: could not apply your reply ($RUN). Needs a human." "" \
-            "Answer with the Comment button on this issue's card in Slack." | gh issue comment "$N" --repo "$REPO" --body-file -
-          # the kit may not have loaded if the run failed early
+          # the status first, then the comment: Slack threads a comment under the card only once action:required is there.
+          # The kit may not have loaded if the run failed early
           if ! .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error; then
             # by hand, still in one edit that leaves exactly one status and one reason
             old=$(gh issue view "$N" --repo "$REPO" --json labels \
@@ -119,3 +120,5 @@ jobs:
             for l in $old; do args+=(--remove-label "$l"); done
             gh issue edit "$N" --repo "$REPO" ${args[@]+"${args[@]}"} --add-label status:needs-human --add-label reason:agent-error --add-label action:required
           fi
+          printf '%s\n' "agentkit: could not apply your reply ($RUN). Needs a human." "" \
+            "Answer with the Comment button on this issue's card in Slack." | gh issue comment "$N" --repo "$REPO" --body-file -

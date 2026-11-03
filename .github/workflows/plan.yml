@@ -82,6 +82,28 @@ jobs:
           bot: ${{ steps.app.outputs.app-slug }}[bot]
           require-all: "true"
 
+      # Claude Code + Slack mode: an approved split. The planner gets the kit's latest `**Proposed split**` comment and
+      # what people with write access said after it (people.sh), as a file, so it creates the sub-tasks the person
+      # approved. No proposal (a person's own /plan of a PRD): no file
+      - name: Collect the approved split
+        if: env.AGENTKIT_INTERFACE == 'claude-slack'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          N: ${{ github.event.issue.number }}
+          BOT: ${{ steps.app.outputs.app-slug }}[bot]
+        run: |
+          latest=$(gh api --paginate "repos/$REPO/issues/$N/comments" \
+            --jq '.[] | select(.user.login == env.BOT and (.body | startswith("**Proposed split**"))) | {id, body} | tojson' | tail -n 1)
+          [ -n "$latest" ] || exit 0
+          people=$(.agentkit-kit/scripts/people.sh "$REPO" "$N" "$BOT")
+          mkdir -p .agentkit-plan
+          if [ -d .git ]; then echo .agentkit-plan/ >>.git/info/exclude; fi
+          jq -rn --argjson p "$latest" --argjson people "$people" \
+            '"# The split the kit proposed\n\n\($p.body)\n" + ([$people[] | select(.id > $p.id) | "\n# A reply after it\n\n\(.body)\n"] | join(""))' \
+            >.agentkit-plan/split.md
+          wc -c .agentkit-plan/split.md
+
       - id: claude
         uses: anthropics/claude-code-action@v1
         env:
@@ -99,6 +121,7 @@ jobs:
             Repository ${{ github.repository }}. Issue #${{ github.event.issue.number }} is the PRD.
             Use the agentkit:plan-feature skill with that issue as the epic. Do not edit repository files.
             Sub-issue status: ${{ vars.AGENTKIT_INTERFACE == 'claude-slack' && 'status:refining' || 'status:backlog' }}
+            ${{ vars.AGENTKIT_INTERFACE == 'claude-slack' && 'Approved split: if .agentkit-plan/split.md exists, it holds the split the kit proposed and the person approved, then every reply after it. Create exactly those sub-tasks, in that order, unless a later reply changes them.' || '' }}
           claude_args: >-
             --model ${{ inputs.model }}
             --max-turns 60
@@ -128,8 +151,10 @@ jobs:
             .agentkit-kit/scripts/set-status.sh "$REPO" "$N"
             exit 0
           fi
-          gh issue comment "$N" --repo "$REPO" --body "agentkit: the planner created no sub-issues ($RUN). Needs a human."
+          # the status first: Slack threads a comment under the issue's card only once action:required is there
           .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human
+          printf '%s\n' "agentkit: the planner created no sub-issues ($RUN). Needs a human." "" \
+            "Answer with the Comment button on this issue's card in Slack." | gh issue comment "$N" --repo "$REPO" --body-file -
 
       # the kit's own /plan (AUTO_SPLIT, or an approved split) that was refused (an untrusted PRD author) or failed:
       # hand over, so the issue never sits at refining or needs-approval with no run coming. A person's /plan that
@@ -144,6 +169,14 @@ jobs:
           N: ${{ github.event.issue.number }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh issue comment "$N" --repo "$REPO" --body "agentkit: the split's /plan run was refused or failed ($RUN). Needs a human."
-          .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error \
-            || gh issue edit "$N" --repo "$REPO" --add-label status:needs-human --add-label reason:agent-error --add-label action:required
+          # the status first: Slack threads a comment under the issue's card only once action:required is there
+          if ! .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error; then
+            # the kit may not have loaded if the run failed early: by hand, in one edit that leaves one status and one reason
+            args=()
+            for l in $(gh issue view "$N" --repo "$REPO" --json labels --jq '.labels[].name | select((startswith("status:") and . != "status:needs-human") or (startswith("reason:") and . != "reason:agent-error"))'); do
+              args+=(--remove-label "$l")
+            done
+            gh issue edit "$N" --repo "$REPO" ${args[@]+"${args[@]}"} --add-label status:needs-human --add-label reason:agent-error --add-label action:required
+          fi
+          printf '%s\n' "agentkit: the split's /plan run was refused or failed ($RUN). Needs a human." "" \
+            "Answer with the Comment button on this issue's card in Slack." | gh issue comment "$N" --repo "$REPO" --body-file -
