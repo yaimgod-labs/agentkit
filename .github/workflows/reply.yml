@@ -22,7 +22,9 @@ jobs:
     runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}
-    # one reply per issue at a time, in order; none is cancelled
+    # one reply per issue at a time. Known limit: GitHub keeps only one pending run per group, so a third quick reply
+    # cancels the pending second before it starts (that run never runs a step). A running reply is never cancelled by
+    # another; one that times out or is cancelled by hand hands over below
     concurrency:
       group: agentkit-reply-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -97,7 +99,7 @@ jobs:
 
       # without this a failed reply leaves the person waiting on an answer that never came
       - name: Hand over on failure
-        if: failure()
+        if: failure() || cancelled()
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -105,5 +107,11 @@ jobs:
           printf '%s\n' "agentkit: could not apply your reply ($RUN). Needs a human." "" \
             "Answer with the Comment button on this issue's card in Slack." | gh issue comment "$N" --repo "$REPO" --body-file -
           # the kit may not have loaded if the run failed early
-          .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error \
-            || gh issue edit "$N" --repo "$REPO" --add-label status:needs-human --add-label reason:agent-error --add-label action:required
+          if ! .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error; then
+            # by hand, still in one edit that leaves exactly one status and one reason
+            old=$(gh issue view "$N" --repo "$REPO" --json labels \
+              --jq '.labels[].name | select((startswith("status:") and . != "status:needs-human") or (startswith("reason:") and . != "reason:agent-error"))')
+            args=()
+            for l in $old; do args+=(--remove-label "$l"); done
+            gh issue edit "$N" --repo "$REPO" ${args[@]+"${args[@]}"} --add-label status:needs-human --add-label reason:agent-error --add-label action:required
+          fi

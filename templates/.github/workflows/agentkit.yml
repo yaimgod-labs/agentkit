@@ -78,10 +78,11 @@ jobs:
 
   reply:
     # Claude Code + Slack mode (AGENTKIT_INTERFACE=claude-slack): a person's answer on a waiting issue,
-    # posted from its Slack card's Comment button, carries out the reply's action
+    # posted from its Slack card's Comment button, carries out the reply's action (`/` commands go to their own jobs)
     if: >-
       github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
-      github.event.comment.user.type != 'Bot' && vars.AGENTKIT_INTERFACE == 'claude-slack' &&
+      github.event.comment.user.type != 'Bot' && !startsWith(github.event.comment.body, '/') &&
+      vars.AGENTKIT_INTERFACE == 'claude-slack' &&
       (contains(github.event.issue.labels.*.name, 'action:required') ||
        contains(github.event.issue.labels.*.name, 'status:blocked'))
     uses: your-org/agentkit/.github/workflows/reply.yml@v1

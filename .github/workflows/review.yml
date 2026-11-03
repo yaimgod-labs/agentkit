@@ -359,8 +359,55 @@ jobs:
           fi
           exit "$rc"
 
+  # Claude Code + Slack mode: a push to a research or RFC PR that waits for approval takes the approval back
+  # (status:review) until the gate has judged the new head, so an `approve` can never merge a head no review ran on.
+  # The gate waits for this job; it re-posts the recommendation and sets needs-approval again
+  hold-approval:
+    if: >-
+      vars.AGENTKIT_INTERFACE == 'claude-slack' && github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
+      github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'agent/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-issues: write
+          permission-actions: read  # Load agentkit reads this run's referenced workflows
+
+      - name: Load agentkit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: review.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+
+      - name: Take back the approval request
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
+          [ -n "$n" ] || exit 0
+          labels=$(gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name')
+          grep -qx status:needs-approval <<<"$labels" || exit 0
+          echo "#$n: new push, back to review until the gate judges it"
+          .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:review
+
   gate:
-    needs: [review, integration, suite, docs]
+    needs: [review, integration, suite, docs, hold-approval]
     if: >-
       always() && (github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'agent/')))
@@ -416,19 +463,22 @@ jobs:
           C=.agentkit-kit/scripts/checks.py
           # a /decide comment on PR $1 by the kit (a Slack answer) or a person with write access
           decided() {
-            local login perm
-            for login in $(gh api --paginate "repos/$REPO/issues/$1/comments" \
-                --jq '.[] | select(.body | test("^/decide (accept|reject)\\b"; "i")) | .user.login' | sort -u); do
+            local logins login perm
+            # captured first, so a failed read fails the step instead of looking undecided
+            logins=$(gh api --paginate "repos/$REPO/issues/$1/comments" \
+              --jq '.[] | select(.body | test("^/decide (accept|reject)\\b"; "i")) | .user.login')
+            while read -r login; do
+              [ -n "$login" ] || continue
               [ "$login" != "$AGENTKIT_BOT" ] || return 0
-              perm=$(gh api "repos/$REPO/collaborators/$login/permission" --jq .permission 2>/dev/null || echo none)
+              perm=$(gh api "repos/$REPO/collaborators/$login/permission" --jq .permission 2>/dev/null </dev/null || echo none)
               case $perm in admin|maintain|write) return 0 ;; esac
-            done
+            done <<<"$(sort -u <<<"$logins")"
             return 1
           }
           # Claude Code + Slack mode: a passing research or RFC PR waits for the person's approval on issue $n,
           # with the doc's recommendation in a comment that starts with the marker apply-reply.sh reads
           ask_approval() {
-            local kind=$1 dir=research doc text rec='' src
+            local kind=$1 dir=research doc text rec='' src body unverified reply
             [ "$kind" = research ] || dir=rfcs
             doc=$(grep -E "^docs/$dir/[A-Za-z0-9._-]+\.md$" <<<"$files" | grep -v '/README\.md$' | head -n1 || true)
             # a doc that cannot be read (removed in the PR) gets the fallback line
@@ -438,12 +488,23 @@ jobs:
             [ -n "$rec" ] || rec="> No recommendation found in the doc."
             src="PR #$pr"
             [ -z "$doc" ] || src="\`$doc\` in PR #$pr"
+            # unticked Human verification items (the rule of checklist.sh), shown before the person approves
+            body=$(gh pr view "$pr" --repo "$REPO" --json body --jq .body)
+            unverified=$(printf '%s\n' "$body" \
+              | awk '/^#+ /{hv = (tolower($0) ~ /^#+ human verification/); next} hv && /^[[:space:]]*- \[ \]/' \
+              | sed -e 's/^[[:space:]]*//' -e 's/<!--/\&lt;!--/g')
+            [ -z "$unverified" ] || unverified="**Not verified yet:**
+          $unverified
+
+          "
+            reply="Reply \`approve\`, or answer in your own words."
+            [ "$kind" = research ] || reply="Reply \`accept <why>\` or \`reject <why>\`."
             printf '%s\n' "<!-- agentkit:recommendation -->
           $rec
 
           From $src.
 
-          Reply \`approve\` (or \`accept <why>\`/\`reject <why>\` for an RFC), or answer in your own words.
+          $unverified$reply
 
           Answer with the Comment button on this issue's card in Slack." | gh issue comment "$n" --repo "$REPO" --body-file -
             set_status status:needs-approval
