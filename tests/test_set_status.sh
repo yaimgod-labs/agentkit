@@ -44,6 +44,11 @@ check "status:needs-info action:required" status:needs-human \
 check "status:needs-info action:required" "" "7 --repo o/r --remove-label status:needs-info --remove-label action:required" "" $S
 check "mode:human status:in-progress" status:review "7 --repo o/r --remove-label status:in-progress --add-label status:review" "" $S
 check "status:review" status:needs-approval "7 --repo o/r --remove-label status:review --add-label status:needs-approval --add-label action:required" "" $S
+# unrelated labels are never touched; a label already in place is not added again
+check "type:bug size:s priority:high status:review" status:needs-info \
+  "7 --repo o/r --remove-label status:review --add-label status:needs-info --add-label action:required" "" $S
+check "status:needs-info action:required" status:needs-info "7 --repo o/r --add-label status:needs-info" "" $S
+check "mode:human status:refining action:required" status:ready "7 --repo o/r --remove-label status:refining --add-label status:ready" "" $S
 check "status:review" status:needs-info "7 --repo o/r --remove-label status:review --add-label status:needs-info"
 check "status:needs-info action:required" status:refining "7 --repo o/r --remove-label status:needs-info --add-label status:refining"
 check "status:review" status:needs-info "7 --repo o/r --remove-label status:review --add-label status:needs-info" "" other
