@@ -8,6 +8,7 @@ echo "shellcheck: ok"
 for f in cli/gh-agentkit/gh-agentkit scripts/*.sh; do /bin/bash -n "$f"; done && echo "bash 3.2 parse: ok"
 tests/test_guard.sh
 tests/test_set_status.sh
+tests/test_stuck.sh
 tests/test_blockers.sh
 tests/test_drop_dependency.sh
 tests/test_hold.sh

@@ -199,6 +199,20 @@ jobs:
             *) echo "#$n is at '$status'; nothing to do" ;;
           esac
 
+      # a runner that died mid-implement runs no "Hand over on failure" step, leaving the issue (and a WIP slot) stuck
+      - name: Retry stuck implement runs
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        continue-on-error: true  # never stops dispatching
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          .agentkit-kit/scripts/stuck.sh "$REPO" 90 | while read -r n label; do
+            echo "#$n stuck at $label"
+            .agentkit-kit/scripts/retry.sh "$REPO" "$n" "$label" "no implement run finished within 90 min of \`$label\` (lost runner?)" </dev/null \
+              || echo "::warning::could not retry or hand over #$n"
+          done
+
       - name: List ready issues
         id: ready
         env:

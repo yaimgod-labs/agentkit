@@ -328,12 +328,9 @@ jobs:
         run: |
           # one automatic retry for a failed run (an API, rate-limit or GitHub hiccup): re-add the label that
           # started it, marked reason:retry, which the next status change clears. A timeout or cancel, an
-          # untrusted author, or a failure of the retry itself goes to a person
-          if [ "$JOB_STATUS" = failure ] && [ "$TRUST" != failure ] \
-            && ! gh issue view "$N" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx reason:retry; then
-            gh issue comment "$N" --repo "$REPO" --body "agentkit: implement run failed ($RUN). Retrying once."
-            if gh issue edit "$N" --repo "$REPO" --remove-label "$LABEL" >/dev/null \
-              && gh issue edit "$N" --repo "$REPO" --add-label "$LABEL" --add-label reason:retry >/dev/null; then exit 0; fi
+          # untrusted author, or a failure of the retry itself goes to a person (retry.sh, shared with dispatch's sweep)
+          if [ "$JOB_STATUS" = failure ] && [ "$TRUST" != failure ] && [ -x .agentkit-kit/scripts/retry.sh ]; then
+            .agentkit-kit/scripts/retry.sh "$REPO" "$N" "$LABEL" "implement run failed ($RUN)" && exit 0
           fi
           gh issue comment "$N" --repo "$REPO" --body "agentkit: implement run failed or timed out ($RUN). Needs a human."
           # the kit may not have loaded if the run failed early
