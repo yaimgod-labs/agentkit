@@ -152,6 +152,7 @@ jobs:
           REPO: ${{ github.repository }}
           N: ${{ github.event.issue.number }}
           TITLE: ${{ github.event.issue.title }}
+          AGENTKIT_BOT: ${{ steps.app.outputs.app-slug }}[bot]
           SLACK: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           affected=$(.agentkit-kit/scripts/drop-dependency.sh "$REPO" "$N" "$TITLE")
@@ -279,6 +280,7 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
           TRUSTED: ${{ steps.trust.outputs.trusted }}
+          AGENTKIT_BOT: ${{ steps.app.outputs.app-slug }}[bot]
         run: |
           candidates=$(jq -r --arg t " $TRUSTED " '.[] | . as $i | select($t | contains(" \($i.author) ")) | .number' "$RUNNER_TEMP/ready.json")
           for n in $candidates; do

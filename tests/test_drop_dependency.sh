@@ -26,7 +26,7 @@ case "$1 $2" in
 esac
 EOF2
 chmod +x "$tmp/gh"
-export PATH="$tmp:$PATH" FAKE_LOG="$tmp/log"
+export PATH="$tmp:$PATH" FAKE_LOG="$tmp/log" AGENTKIT_BOT="agentkit-bot[bot]"
 fail=0
 ok() {  # name command...: passes when the command succeeds
   name=$1; shift
@@ -69,14 +69,14 @@ ok "cross-repo: skip logged on stderr" grep -qx 'skip x/y#9: other repo' "$tmp/e
 # A dependent that already has the block comment for this blocker is skipped: a retry or a re-close never posts
 # twice, and a person's `/board unblock` sticks.
 : >"$FAKE_LOG"
-out=$(FAKE_COMMENTS='[{"body":"<!-- agentkit:block -->\n**Blocked:** dropped dependency: #3 (Old idea)"}]' \
+out=$(FAKE_COMMENTS='[{"user":{"login":"agentkit-bot[bot]"},"body":"<!-- agentkit:block -->\n**Blocked:** dropped dependency: #3 (Old idea)"}]' \
   FAKE_JSON='[{"number":7,"state":"open","repository_url":"https://api.github.com/repos/o/r"}]' "$here/../scripts/drop-dependency.sh" o/r 3 "Old idea")
 ok "already commented: not printed" [ -z "$out" ]
 ok "already commented: no second comment" nolog '^issue comment 7 '
 ok "already commented: status left alone" nolog '^issue edit 7 '
 # A comment for another blocker (#30) does not count for #3.
 : >"$FAKE_LOG"
-out=$(FAKE_COMMENTS='[{"body":"<!-- agentkit:block -->\n**Blocked:** dropped dependency: #30 (Other)"}]' \
+out=$(FAKE_COMMENTS='[{"user":{"login":"agentkit-bot[bot]"},"body":"<!-- agentkit:block -->\n**Blocked:** dropped dependency: #30 (Other)"}]' \
   FAKE_JSON='[{"number":7,"state":"open","repository_url":"https://api.github.com/repos/o/r"}]' "$here/../scripts/drop-dependency.sh" o/r 3 "Old idea")
 ok "comment for #30: 7 still handled" [ "$out" = 7 ]
 # test_drop_dependency_in_flight: a dependent already in work gets the comment only; its status is left to the flow

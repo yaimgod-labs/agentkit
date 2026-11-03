@@ -71,11 +71,17 @@ jobs:
         if: github.event.label.name == 'status:in-progress'
         env:
           GH_TOKEN: ${{ steps.write.outputs.token }}
+          AGENTKIT_BOT: ${{ steps.write.outputs.app-slug }}[bot]
         run: |
           # capture first so an API error fails the step (fail closed; the next step hands over)
           hold=$(.agentkit-kit/scripts/hold.sh "$REPO" "$N")
           case "$hold" in
-            go) echo "held=false" >>"$GITHUB_OUTPUT"; exit 0 ;;
+            go)
+              # A drop that read this issue while it was still ready blocks it after the dispatcher's check passed.
+              # It sets status:blocked before its comment, so if hold.sh saw that comment, the label is already gone.
+              labels=$(gh issue view "$N" --repo "$REPO" --json labels --jq '.labels[].name')
+              if grep -qx status:in-progress <<<"$labels"; then echo "held=false" >>"$GITHUB_OUTPUT"; exit 0; fi
+              echo "#$N is no longer status:in-progress; not starting" ;;
             open\ *)
               open=${hold#open }
               list="#${open// /, #}"

@@ -30,7 +30,7 @@ case "$1 $2" in
 esac
 EOF2
 chmod +x "$tmp/gh"
-export PATH="$tmp:$PATH" FAKE_LOG="$tmp/log"
+export PATH="$tmp:$PATH" FAKE_LOG="$tmp/log" AGENTKIT_BOT="agentkit-bot[bot]"
 fail=0
 ok() {  # name command...: passes when the command succeeds
   name=$1; shift
@@ -42,7 +42,7 @@ count() { [ "$(grep -c -- "$1" "$FAKE_LOG")" = "$2" ]; }
 hold() { : >"$FAKE_LOG"; "$here/../scripts/hold.sh" o/r 7; }
 
 dropped='[{"number":5,"title":"Old idea","state":"closed","state_reason":"not_planned"}]'
-marked='[{"body":"<!-- agentkit:block -->\n**Blocked:** dropped dependency: #5 (Old idea)"}]'
+marked='[{"user":{"login":"agentkit-bot[bot]"},"body":"<!-- agentkit:block -->\n**Blocked:** dropped dependency: #5 (Old idea)"}]'
 
 out=$(FAKE_BLOCKED_BY='[{"number":3,"title":"A","state":"open"},{"number":4,"title":"B","state":"open"}]' hold)
 ok "open blockers: says open with their numbers" [ "$out" = "open 3 4" ]
@@ -74,10 +74,28 @@ ok "dropped, commented: go" [ "$out" = go ]
 ok "dropped, commented: writes nothing" nolog '^issue '
 
 # a block comment for another blocker (#50) is not one for #5, and the text without the marker does not count
-out=$(FAKE_BLOCKED_BY=$dropped FAKE_COMMENTS='[{"body":"<!-- agentkit:block -->\n**Blocked:** dropped dependency: #50 (Other)"}]' hold)
+out=$(FAKE_BLOCKED_BY=$dropped FAKE_COMMENTS='[{"user":{"login":"agentkit-bot[bot]"},"body":"<!-- agentkit:block -->\n**Blocked:** dropped dependency: #50 (Other)"}]' hold)
 ok "comment for #50 does not cover #5" [ "$out" = "blocked 5" ]
-out=$(FAKE_BLOCKED_BY=$dropped FAKE_COMMENTS='[{"body":"**Blocked:** dropped dependency: #5 (Old idea)"}]' hold)
+out=$(FAKE_BLOCKED_BY=$dropped FAKE_COMMENTS='[{"user":{"login":"agentkit-bot[bot]"},"body":"**Blocked:** dropped dependency: #5 (Old idea)"}]' hold)
 ok "comment without the marker does not count" [ "$out" = "blocked 5" ]
+
+# test_hold_fake_comment: the same text posted by a person (or another bot) is not the kit's record
+out=$(FAKE_LABELS=status:ready FAKE_BLOCKED_BY=$dropped \
+  FAKE_COMMENTS='[{"user":{"login":"stranger"},"body":"<!-- agentkit:block -->\n**Blocked:** dropped dependency: #5 (Old idea)"}]' hold)
+ok "comment by a person does not count" [ "$out" = "blocked 5" ]
+ok "comment by a person: the kit still writes its own" count '^issue comment 7 ' 1
+
+# without the bot login the script cannot tell its comments apart: it stops before any write
+if (unset AGENTKIT_BOT; FAKE_BLOCKED_BY=$dropped hold) >/dev/null 2>&1; then rc=0; else rc=$?; fi
+ok "no AGENTKIT_BOT: non-zero exit" [ "$rc" != 0 ]
+ok "no AGENTKIT_BOT: writes nothing" nolog '^issue \(comment\|edit\)'
+
+# every workflow step that runs these scripts passes the bot login
+for wf in "$here"/../.github/workflows/*.yml; do
+  missing=$(awk '/^      - /{if (s ~ /scripts\/(hold|drop-dependency)\.sh/ && s !~ /AGENTKIT_BOT:/) print n; s=""; n=NR} {s=s"\n"$0}
+                 END{if (s ~ /scripts\/(hold|drop-dependency)\.sh/ && s !~ /AGENTKIT_BOT:/) print n}' "$wf")
+  ok "$(basename "$wf"): steps calling hold/drop-dependency set AGENTKIT_BOT${missing:+ (step at line $missing)}" [ -z "$missing" ]
+done
 
 # two dropped blockers, one already commented: only the new one is recorded
 out=$(FAKE_BLOCKED_BY='[{"number":5,"title":"Old idea","state":"closed","state_reason":"not_planned"},{"number":6,"title":"Dup","state":"closed","state_reason":"duplicate"}]' \

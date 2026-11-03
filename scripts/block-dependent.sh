@@ -8,8 +8,11 @@
 set -euo pipefail
 repo=$1 n=$2 b=$3 title=$4 mode=${5:-}
 here=$(cd "$(dirname "$0")" && pwd)
+# Only the kit's own comments count: anyone who can comment could otherwise post this text first and let the issue start.
+: "${AGENTKIT_BOT:?set AGENTKIT_BOT to the bot login of the kit (<app-slug>[bot])}"
 # capture first so an API error stops the script before any write (fail closed)
-seen=$(gh api --paginate "repos/$repo/issues/$n/comments" --jq '.[] | select(.body | contains("<!-- agentkit:block -->")) | .body')
+seen=$(gh api --paginate "repos/$repo/issues/$n/comments" \
+  --jq '.[] | select(.user.login == env.AGENTKIT_BOT and (.body | contains("<!-- agentkit:block -->"))) | .body')
 if grep -qF "dropped dependency: #$b " <<<"$seen"; then exit 0; fi
 [ "$mode" = --comment-only ] || "$here/set-status.sh" "$repo" "$n" status:blocked
 gh issue comment "$n" --repo "$repo" --body "<!-- agentkit:block -->
