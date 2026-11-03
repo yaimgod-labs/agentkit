@@ -1,6 +1,6 @@
 ---
 description: Show the project board (status, estimates, next 5 tasks in dispatch order) and reorder it
-argument-hint: [n | move <n> <pos> | unblock <n> | unlink <n> <b> | done <n>]
+argument-hint: [n | move <n> <pos> | unblock <n> | replace <n> <b> | unlink <n> <b> | done <n>]
 ---
 
 `$ARGUMENTS` picks the mode. The person never opens GitHub: print what they need to act on, nothing more.
@@ -71,6 +71,17 @@ This repeats `scripts/set-status.sh`'s rule (exactly one `status:*`, at most one
 
 A dropped dependency's block comment stays on the issue, and that comment is what tells the dispatcher the person has seen it, so the dropped blocker no longer holds the issue.
 
+An issue blocked by a dropped dependency gets no Slack card in the Claude Code + Slack mode (it never waited on a person before, so it has no `action:required`): handle it from here with `unblock <n>`, or `replace <n> <b>` when other work takes the dropped issue's place.
+
+## `replace <n> <b>`
+
+`#<b>` takes the place of the dropped dependency that blocked `#<n>`: the same checks and result as a Slack `replace #<b>` reply (`scripts/apply-reply.sh`).
+
+1. `gh issue view <n> --json labels --jq '[.labels[].name]'`. If `status:blocked` is not among them, print "#<n> is not blocked (status: <its status:* label, or none>)" and change nothing.
+2. `<b>` must be a number other than `<n>`, and an open issue (not a PR) of this repo: `gh api "repos/$REPO/issues/<b>" --jq 'select(.state == "open" and .pull_request == null and (.repository_url | ascii_downcase | endswith("/repos/" + ("'"$REPO"'" | ascii_downcase)))) | .id'`. Empty output or an error: print "#<b> is not an open issue here" and change nothing.
+3. Link it: `gh api "repos/$REPO/issues/<n>/dependencies/blocked_by" -F issue_id=<that id>`. If that fails, print the error and stop.
+4. ONE edit, as in `unblock` but to ready: `gh issue edit <n>` with `--remove-label <l>` for every `status:*` label present except `status:ready`, every `reason:*` label and `action:required` if present (unless the issue is `mode:human`, which waits on you at ready), plus `--add-label status:ready`. Print "#<n> now waits on #<b>".
+
 ## `unlink <n> <b>`
 
 `#<b>` is not a real prerequisite of `#<n>` (for example one refine added).
@@ -82,4 +93,4 @@ A dropped dependency's block comment stays on the issue, and that comment is wha
 
 ## `done <n>`
 
-Only for `mode:human`: check `gh issue view <n> --json labels --jq '[.labels[].name]|index("mode:human")'` is not null, otherwise say the issue is not a human task and stop. Then `gh issue close <n> --reason completed`. Print "#<n> closed".
+Only for `mode:human`: check `gh issue view <n> --json labels --jq '[.labels[].name]'` has `mode:human`, otherwise say the issue is not a human task and stop. Then, first, ONE edit that clears what made it wait: `gh issue edit <n>` with `--remove-label <l>` for every `status:*` label present and `action:required` if present (skip the edit when there are none), so a closed issue keeps no status, as when the kit closes one. Then `gh issue close <n> --reason completed`. Print "#<n> closed".

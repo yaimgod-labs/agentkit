@@ -64,13 +64,14 @@ cat >"$T/research.md" <<'EOF'
 ## Acceptance criteria
 - [ ] <what the answer must cover>
 
+<!-- agentkit:research-for #<n> -->
 <!-- agentkit:filed-by-task -->
 EOF
 gh issue create --repo "$REPO" --title "<short question>" --body-file "$T/research.md" \
   --label type:research --label status:refining
 ```
 
-Then link it as a blocker of `<n>`, as in step 4 (`<b>` = the research issue). The research issue goes through CI refine like any `/research` question; `<n>` waits for its answer.
+`<n>` in the `research-for` line is the issue from step 3: it tells the kit which issue the research answers (in the Claude Code + Slack mode, approving the research passes its recommendation there; overriding it unlinks it from there). The `filed-by-task` line stays last. Then link it as a blocker of `<n>`, as in step 4 (`<b>` = the research issue). The research issue goes through CI refine like any `/research` question; `<n>` waits for its answer.
 
 ## 6. Set the status
 

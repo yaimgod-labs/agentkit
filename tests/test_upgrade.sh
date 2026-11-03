@@ -66,6 +66,12 @@ check "doctor fails without AUTO_MERGE" "grep -q 'FAIL  .*AUTO_MERGE' <<<\"\$out
 check "doctor warns without the webhook" "grep -q 'warn  .*SLACK_WEBHOOK_URL' <<<\"\$out\""
 check "doctor warns without the label" "grep -q 'warn  .*action:required' <<<\"\$out\""
 check "doctor prints the signin reminder" "grep -q '/github signin' <<<\"\$out\""
-IFACE=claude-slack AM=true; out=$(doctor_interface o/r SLACK_WEBHOOK_URL "action:required" 2>&1)
+check "doctor warns without the reply job" "grep -q 'warn  .*reply' <<<\"\$out\""
+check "doctor warns without the triage job" "grep -q 'warn  .*triage' <<<\"\$out\""
+jobs="    uses: x/agentkit/.github/workflows/reply.yml@v1
+    uses: x/agentkit/.github/workflows/triage.yml@v1"
+IFACE=claude-slack AM=true; out=$(doctor_interface o/r SLACK_WEBHOOK_URL "action:required" "$jobs" 2>&1)
 check "doctor clean when the mode is set up" "! grep -qE 'FAIL|warn' <<<\"\$out\""
+out=$(doctor_interface o/r SLACK_WEBHOOK_URL "action:required" "${jobs%%$'\n'*}" 2>&1)
+check "doctor warns about the missing triage job only" "grep -q 'warn  .*triage' <<<\"\$out\" && ! grep -q 'warn  .*reply' <<<\"\$out\""
 exit $fail

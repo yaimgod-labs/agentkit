@@ -6,20 +6,22 @@ Turns a GitHub repo into an agent-driven project. Tasks are issues; status is a 
 
 ```
 backlog ──(you)──▶ refining ──refine──▶ ready ──dispatch──▶ in-progress ──implement──▶ review ──gate──▶ approved ──(you merge)──▶ closed
-                      │   ▲               ▲                     ▲                    │    │
-                      ▼   │ (you answer)  │ (you, skipping      └─ changes-requested ┘    └─▶ needs-verification ──(you tick)──▶ approved
-                   needs-info             │  refine)                after 3 failed rounds ▶ needs-human + reason:*
+                    │ │   ▲               ▲                     ▲                    │    │
+                    │ ▼   │ (you answer)  │ (you, skipping      └─ changes-requested ┘    └─▶ needs-verification ──(you tick)──▶ approved
+                    │ needs-info          │  refine)                after 3 failed rounds ▶ needs-human + reason:*
+                    └─▶ needs-approval   (Slack mode only: refine's split proposal, or the gate's passing research or RFC PR;
+                        your answer moves it on)
 ```
 
 In the Claude Code + Slack mode ([below](#claude-code--slack-mode)) a new issue starts at `refining` by itself, and refine can stop at `needs-approval` (a research recommendation, an RFC decision or a split proposal) until you answer.
 
 | Step | Trigger | What runs |
 |---|---|---|
-| refine | `status:refining`, or your comment on a `status:needs-info` issue | Claude (read-only) posts a plan, criteria and questions; the workflow sets `size:*`, `type:*`, `mode:*` and moves the issue to `ready` (size xs/s, nothing unclear) or `needs-info` (assigned to you). An issue whose agent PR is open is not re-planned: the comment gets a pointer to the PR |
-| dispatch | every 30 min, any `status:*` label, PR merged or edited, a person's "Request changes" review | promotes the top unblocked `ready` issue (board **Rank**, then the debt quota and priority, then oldest; skips `mode:human`, `size:m`, `size:l`) while open agent issues not yet merged (`in-progress` through `approved`) < WIP (default 2), so PRs never pile up faster than people merge them; mirrors labels to the board's **Stage** field; approves a `needs-verification` PR once its Human verification boxes are all ticked; sends a PR back to the implementer when a person with write access requests changes (not a failed round), also from `needs-info`; on the schedule, retries an issue left in `in-progress` or `changes-requested` over 90 min with no unfinished run titled like it (a lost runner), like a failed implement run |
+| refine | `status:refining`, or your comment on a `status:needs-info` issue (in the Slack mode your reply sets `status:refining` instead, below) | Claude (read-only) posts a plan, criteria and questions; the workflow sets `size:*`, `type:*`, `mode:*` and moves the issue to `ready` (size xs/s, nothing unclear) or `needs-info` (assigned to you). An issue whose agent PR is open is not re-planned: the comment gets a pointer to the PR |
+| dispatch | every 30 min, any `status:*` label, PR merged or edited, a person's "Request changes" review | promotes the top unblocked `ready` issue (board **Rank**, then the debt quota and priority, then oldest; skips `mode:human`, `size:m`, `size:l`) while open agent issues not yet merged (`in-progress` through `approved`) < WIP (default 2), so PRs never pile up faster than people merge them; mirrors labels to the board's **Stage** field; approves a `needs-verification` PR once its Human verification boxes are all ticked (and merges it if `AUTO_MERGE=true`); sends a PR back to the implementer when a person with write access requests changes (not a failed round), also from `needs-info`; on the schedule, retries an issue left in `in-progress` or `changes-requested` over 90 min with no unfinished run titled like it (a lost runner), like a failed implement run |
 | implement | `status:in-progress` or `status:changes-requested` | Claude (implementer) commits on `agent/<n>-<slug>` (an existing branch first gets the base merged in; Claude resolves any conflicts); the workflow pushes, opens the PR (`Closes #n`), sets `status:review`. A fix round gets this round's feedback: everything people wrote on the PR, the bots' comments since its head commit, and the failed jobs' log lines. A run with no commits goes to `needs-human` + `reason:agent-error`, except a fix round a person's "Request changes" started: then the PR gets the agent's question, @-mentioning the reviewer, and the issue goes to `needs-info` until the next "Request changes" review. A failed run (not a timeout) is retried once, marked `reason:retry`; a second failure goes to a person (`scripts/retry.sh`, shared with dispatch's stuck-run sweep) |
 | review | PR opened / pushed / ready for review | in parallel: `review (code)`, `review (security)` — fresh Claude sessions, read-only; in a fix round they first check the earlier findings were fixed and fail settled code only for an unmet criterion (code) or a high finding (security) — `docs`, and `integration` (`.agentkit/test.sh`, or each changed `suite`) |
-| gate | after the checks; again on other CI apps' results and every 30 min | every check run and commit status on the PR's head commit counts, other CI included, and the kit's own (`review (code)`, `review (security)`, `docs`, integration) must have reported; a PR that conflicts with its base goes back to the implementer (not a failed round); all green → `status:approved` (auto-merge only if repo var `AUTO_MERGE=true`), or `status:needs-verification` while the PR has unticked items under `## Human verification`; otherwise back to the implementer, max 3 rounds |
+| gate | after the checks; again on other CI apps' results and every 30 min | every check run and commit status on the PR's head commit counts, other CI included, and the kit's own (`review (code)`, `review (security)`, `docs`, integration) must have reported; a PR that conflicts with its base goes back to the implementer (not a failed round); all green → `status:approved` (auto-merge only if repo var `AUTO_MERGE=true`; a merge that fails goes to `needs-human`), or `status:needs-verification` while the PR has unticked items under `## Human verification`; otherwise back to the implementer, max 3 rounds |
 | plan | `/plan` comment on an issue | the issue becomes an epic with sub-issues, all `status:backlog` |
 | digest | daily, 07:00 UTC | lists open issues per label in its `statuses` input (default: needs-info, needs-human, needs-verification, needs-approval, approved, blocked; in the Slack mode `approved` is skipped, since a merge is automatic), least recently updated first, in Slack and the run summary; nothing waiting, no post |
 | retro | weekly, Monday 08:00 UTC | counts the week (cycle time, fix rounds, handover reasons, retries, debt share, and turns, minutes and estimated cost per Claude job, from the `agentkit-usage-*` artifact each Claude run leaves); a read-only Claude reads the issues behind them and proposes at most 3 changes; posted as a Discussion (`category`, default General; `days`, default 7); in the Slack mode also one line with its link to `SLACK_WEBHOOK_URL` |
@@ -115,8 +117,8 @@ and `gh secret set SLACK_WEBHOOK_URL --repo <owner/repo>` for the done message, 
 
 | Status | Keywords | Free text |
 |---|---|---|
-| `needs-info` | `research <q>`, `block <reason>` | your answer; refine continues |
-| `needs-human` | `retry`, `research <q>`, `block <reason>` | guidance; the implementer re-runs with it |
+| `needs-info` | `research <q>`, `block <reason>` | your answer; refine continues (with the agent PR open: the implementer's fix round) |
+| `needs-human` | `retry`, `research <q>`, `block <reason>` | guidance; the implementer re-runs with it (with no agent PR yet, `retry` and guidance go back to refine) |
 | `needs-verification` | `verified`, `block <reason>` | a failed check; the PR goes back to the implementer |
 | `needs-approval`, research | `approve`, `block <reason>` | your own answer; it wins over the recommendation |
 | `needs-approval`, RFC | `accept <why>`, `reject <why>`, `block <reason>` | none (a hint) |
@@ -124,7 +126,9 @@ and `gh secret set SLACK_WEBHOOK_URL --repo <owner/repo>` for the done message, 
 | `blocked` | `unblock`, `replace #N` | none (a hint) |
 | `ready` with `mode:human` | `done`, `block <reason>` | none (a hint) |
 
-`/board` and `/task` work in either mode, in Claude Code (see above).
+`/board` and `/task` work in either mode, in Claude Code (see above). An issue blocked by a dropped dependency (an issue it waited on was closed as not planned) gets no Slack card: handle it in Claude Code with `/board unblock <n>`, or `/board replace <n> <b>` when #b takes the dropped issue's place.
+
+An RFC merges only on a person's decision: your `accept`/`reject` reply (or a `/decide` on the PR) by someone with write access. The kit's relayed `/decide` alone never counts, and neither does a rounds reset the kit did not post for a person's reply, since the agents comment as the kit too. The implementer's Claude has no comment token at all.
 
 ## GitHub Free limits
 

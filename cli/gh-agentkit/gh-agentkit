@@ -346,7 +346,7 @@ EOF
 # ---- doctor -----------------------------------------------------------------
 
 # the Claude Code + Slack mode's requirements, only where the mode is on; ok/bad/warn come from cmd_doctor
-# args: repo, the secret names, the label names
+# args: repo, the secret names, the label names, the caller workflow's text (on the default branch)
 doctor_interface() {
   [ "$(var_get "$1" AGENTKIT_INTERFACE)" = claude-slack ] || return 0
   [ "$(var_get "$1" AUTO_MERGE)" = true ] \
@@ -354,6 +354,12 @@ doctor_interface() {
   grep -qx SLACK_WEBHOOK_URL <<<"$2" \
     && ok "secret SLACK_WEBHOOK_URL" || warn "secret SLACK_WEBHOOK_URL missing: no done message, digest or retro line in Slack (gh secret set SLACK_WEBHOOK_URL --repo $1)"
   grep -qx action:required <<<"$3" || warn "label action:required missing (gh agentkit upgrade $1)"
+  # upgrade sets the variable before its caller PR merges: without these jobs replies do nothing and new issues sit
+  local job
+  for job in reply triage; do
+    grep -q "/\.github/workflows/$job\.yml@" <<<"${4:-}" \
+      || warn "the caller has no $job job: merge the gh agentkit upgrade $1 PR (the Slack mode needs it)"
+  done
   echo "        Slack mode: run /github signin in the channel once, then the subscribe lines (gh agentkit upgrade $1 --interface claude-slack prints them)"
 }
 
@@ -384,7 +390,8 @@ cmd_doctor() {
   for s in AGENTKIT_APP_KEY CLAUDE_CODE_OAUTH_TOKEN; do grep -qx "$s" <<<"$secrets" && ok "secret $s" || bad "secret $s missing (gh agentkit secrets $repo)"; done
   for v in AGENTKIT_CLIENT_ID AGENTKIT_PROJECT; do [ -n "$(var_get "$repo" "$v")" ] && ok "variable $v" || bad "variable $v missing"; done
 
-  doctor_interface "$repo" "$secrets" "$have"
+  local caller_text; caller_text=$(gh api "repos/$repo/contents/.github/workflows/agentkit.yml?ref=$def" --jq .content 2>/dev/null | base64 -d 2>/dev/null || true)
+  doctor_interface "$repo" "$secrets" "$have" "$caller_text"
 
   local num; num=$(var_get "$repo" AGENTKIT_PROJECT)
   if [ -n "$num" ]; then
