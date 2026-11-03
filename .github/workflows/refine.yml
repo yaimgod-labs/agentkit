@@ -31,7 +31,41 @@ on:
 permissions: {}
 
 jobs:
+  # a needs-info issue with an open agent PR waits on a review of that PR (implement asked the reviewer there), not
+  # on a new plan: a re-plan would move it to ready and start a new round outside the review. Point the commenter
+  # to the PR instead. Fails open: an API error refines as before.
+  check:
+    if: github.event_name == 'issue_comment'
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      pr: ${{ steps.pr.outputs.pr }}
+    steps:
+      - id: write
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-issues: write
+          permission-pull-requests: read
+
+      - id: pr
+        env:
+          GH_TOKEN: ${{ steps.write.outputs.token }}
+          REPO: ${{ github.repository }}
+          N: ${{ github.event.issue.number }}
+        run: |
+          pr=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+            --jq '.[] | select(.head.ref | startswith("agent/" + env.N + "-")) | .number' | sed -n 1p) || pr=
+          [ -n "$pr" ] || exit 0
+          gh issue comment "$N" --repo "$REPO" --body "agentkit: this issue's PR #$pr is open. To answer its question, submit a \"Request changes\" review on #$pr with the details."
+          echo "pr=$pr" >>"$GITHUB_OUTPUT"
+
   refine:
+    needs: check
+    # check is skipped for a label event, and refine still runs
+    if: ${{ !cancelled() && needs.check.outputs.pr == '' }}
     runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:

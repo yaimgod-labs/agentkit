@@ -191,6 +191,7 @@ jobs:
 
       # fix round: hand the reviewers' findings over as a file; Claude's read-only token cannot read PR checks
       - name: Collect review feedback
+        id: feedback
         if: env.MODE == 'fix'
         env:
           GH_TOKEN: ${{ steps.write.outputs.token }}
@@ -202,6 +203,7 @@ jobs:
           # already), and everything people wrote, which is rare and may still be open
           SINCE=$(gh api "repos/$REPO/commits/$sha" --jq .commit.committer.date)
           export SINCE
+          { echo "pr=$pr"; echo "since=$SINCE"; } >>"$GITHUB_OUTPUT"
           {
             echo "# Review feedback on PR #$pr"
             echo; echo "## PR comments"
@@ -275,9 +277,26 @@ jobs:
           BASE: ${{ steps.branch.outputs.base }}
           START: ${{ steps.branch.outputs.start }}
           EXEC: ${{ steps.claude.outputs.execution_file }}
+          PR: ${{ steps.feedback.outputs.pr }}
+          SINCE: ${{ steps.feedback.outputs.since }}
         run: |
           summary=$(jq -r '[.[] | select(.type=="result")] | last | .result // ""' "$EXEC" 2>/dev/null || true)
           if [ "$(git rev-parse HEAD)" = "$START" ]; then
+            # a fix round a person's "Request changes" started (submitted since the head commit), and no commits:
+            # most likely the agent did not understand the review, so ask the reviewer(s) on the PR
+            who=
+            if [ "$MODE" = fix ] && [ -n "$PR" ]; then
+              who=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+                --jq '.[] | select(.user.type != "Bot" and .state == "CHANGES_REQUESTED" and .submitted_at > env.SINCE) | "@\(.user.login)"' \
+                | sort -u | tr '\n' ' ') || who=
+            fi
+            if [ -n "$who" ]; then
+              gh pr comment "$PR" --repo "$REPO" --body "agentkit: ${who}the implementer made no commits for your review and may need more detail. Answer by submitting another \"Request changes\" review with the details.
+
+          ${summary}"
+              .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-info
+              exit 0
+            fi
             gh issue comment "$N" --repo "$REPO" --body "agentkit: the implementer made no commits. Needs a human.
 
           ${summary}"

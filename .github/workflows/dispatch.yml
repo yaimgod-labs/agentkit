@@ -192,7 +192,7 @@ jobs:
           # not a failed round. An implementer already at work has read its feedback: say so instead
           status=$(gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name | select(startswith("status:"))')
           case $status in
-            status:review|status:approved|status:needs-verification|status:needs-human)
+            status:review|status:approved|status:needs-verification|status:needs-human|status:needs-info)
               .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:changes-requested ;;
             status:in-progress|status:changes-requested)
               gh pr comment "$PR" --repo "$REPO" --body "agentkit: the implementer is already working on this PR and has read its feedback. Request changes again after its next push." ;;
