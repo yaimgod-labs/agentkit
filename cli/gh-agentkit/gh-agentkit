@@ -20,6 +20,7 @@ LABELS=(
   "status:blocked|b60205|Waiting on something outside the repo"
   "status:needs-human|5319e7|Automation stopped; a human must act"
   "status:needs-verification|bfd4f2|Checks green; a person must verify the Human verification items"
+  "status:needs-approval|0e8a16|Agent proposal waiting for your approve"
   "size:xs|ededed|Under an hour, one file"
   "size:s|ededed|One PR, at most a day"
   "size:m|ededed|Several PRs; split before work"
@@ -44,11 +45,12 @@ LABELS=(
   "priority:high|b60205|Do first"
   "priority:medium|fbca04|Normal"
   "priority:low|c2e0c6|When there is room"
+  "action:required|d93f0b|Waiting on you (Slack pings these)"
 )
 # labels and Stage options a release renamed (old|new); upgrade renames them in place, so issues and cards keep them
 RENAMED_LABELS=("status:needs-device-check|status:needs-verification" "reason:device|reason:manual-check")
 RENAMED_STAGES='{"Needs device check": "Needs verification"}'
-STAGES="Backlog,Refining,Needs info,Ready,In progress,Review,Changes requested,Needs verification,Approved,Blocked,Needs human,Done"
+STAGES="Backlog,Refining,Needs info,Ready,In progress,Review,Changes requested,Needs verification,Needs approval,Approved,Blocked,Needs human,Done"
 CHECKS=("review / review (code)" "review / review (security)" "review / integration")
 
 die() { echo "error: $*" >&2; exit 1; }

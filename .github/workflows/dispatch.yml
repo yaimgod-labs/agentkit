@@ -41,6 +41,8 @@ jobs:
     concurrency:
       group: agentkit-dispatch-${{ github.repository }}
       cancel-in-progress: false
+    env:
+      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
     steps:
       - id: app
         uses: actions/create-github-app-token@v3
@@ -83,7 +85,7 @@ jobs:
             status:review) echo Review;; status:changes-requested) echo "Changes requested";; status:approved) echo Approved;;
             status:blocked) echo Blocked;; status:needs-human) echo "Needs human";;
             status:refining) echo Refining;; status:needs-info) echo "Needs info";;
-            status:needs-verification) echo "Needs verification";; esac)
+            status:needs-verification) echo "Needs verification";; status:needs-approval) echo "Needs approval";; esac)
           [ -n "$stage" ] || exit 0
           pid=$(gh project view "$PROJECT" --owner "$OWNER" --format json --jq .id)
           item=$(gh project item-add "$PROJECT" --owner "$OWNER" --url "$ISSUE_URL" --format json --jq .id)
