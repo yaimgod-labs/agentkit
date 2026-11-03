@@ -104,6 +104,25 @@ for labels in (["status:in-progress"], ["status:review"], ["status:ready"], ["ty
 expect("has_pr ignored", reply("verified", *NV, has_pr=True) == reply("verified", *NV, has_pr=False))
 expect("has_pr may be absent", json.loads(run_raw(json.dumps({"body": "done", "labels": RH})).stdout) == {"action": "done", "arg": ""})
 
+# parsing details
+expect("newline after the keyword", act("block\nwaiting on legal", *NI) == ("block", "waiting on legal"), act("block\nwaiting on legal", *NI))
+expect("approve!!", act("approve!!", *NA_R) == ("approve-research", ""))
+expect("keyword mid-sentence is free text", act("I think we should block this", *NI) == ("answer", "I think we should block this"))
+for body in ("replace #0", "replace 007", "replace #\u0664\u0662"):
+    expect(f"replace {body!r} is a hint", act(body, *BL) == ("hint", "replace"), act(body, *BL))
+
+# no state change is safe when the labels are ambiguous
+expect("two status labels", act("verified", "status:needs-verification", "status:needs-info") == ("none", ""))
+expect("research and rfc together", act("approve", "status:needs-approval", "type:research", "type:rfc") == ("none", ""))
+expect("research and rfc, free text", act("do b", "status:needs-approval", "type:rfc", "type:research") == ("none", ""))
+
+# invalid input exits 2 with a message and no stdout
+for raw in ('[]', '"x"', '{"body": 123, "labels": []}', '{"body": "a", "labels": [1]}', '{"body": "a", "labels": [null]}',
+            '{"body": "a", "labels": "status:ready"}', '{"body": "a", "labels": [], "has_pr": "yes"}'):
+    r = run_raw(raw)
+    expect(f"bad input {raw} exits 2", r.returncode == 2 and r.stderr and not r.stdout, (r.returncode, r.stderr, r.stdout))
+expect("null body is empty", json.loads(run_raw('{"body": null, "labels": ["status:needs-info"]}').stdout) == {"action": "hint", "arg": ""})
+
 # invalid JSON
 r = run_raw("not json")
 expect("invalid JSON exits 2 with a message", r.returncode == 2 and r.stderr and not r.stdout, (r.returncode, r.stderr))

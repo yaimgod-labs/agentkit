@@ -15,14 +15,13 @@ for the status gives `hint` with the keyword as `arg`, and so does a keyword tha
 is `hint` with an empty `arg`. A status the table does not list (and `ready` without `mode:human`) gives
 `none`: the workflow does nothing.
 
-The status is the issue's `status:*` label. needs-approval is split by `type:*`: research, rfc, or any other
+The status is the issue's single `status:*` label. needs-approval is split by `type:*`: research, rfc, or any other
 type (a split proposal).
 """
 import json
 import re
 import sys
 
-KEYWORDS = {"approve", "research", "block", "unblock", "replace", "verified", "accept", "reject", "retry", "done"}
 NEEDS_ARG = {"research", "block", "replace", "accept", "reject"}
 
 # (status, kind) -> ({keyword: action}, free-text action)
@@ -37,15 +36,22 @@ TABLE = {
     ("ready", "human"): ({"done": "done", "block": "block"}, "hint"),
 }
 
+KEYWORDS = {k for keywords, _ in TABLE.values() for k in keywords}
+
 
 def out(action, arg=""):
     return {"action": action, "arg": arg}
 
 
 def table_key(labels):
-    status = next((l[len("status:"):] for l in labels if l.startswith("status:")), "")
+    statuses = [l[len("status:"):] for l in labels if l.startswith("status:")]
+    if len(statuses) != 1:
+        return None
+    status = statuses[0]
     if status == "needs-approval":
         types = {l[len("type:"):] for l in labels if l.startswith("type:")}
+        if {"research", "rfc"} <= types:
+            return None
         return (status, "research" if "research" in types else "rfc" if "rfc" in types else "split")
     if status == "ready":
         return (status, "human" if "mode:human" in labels else "none")
@@ -68,18 +74,30 @@ def parse(body, labels):
     if word not in keywords or (word in NEEDS_ARG and not rest):
         return out("hint", word)
     if word == "replace":
-        m = re.fullmatch(r"#?(\d+)", rest)
+        m = re.fullmatch(r"#?([1-9][0-9]*)", rest)
         return out("replace", m.group(1)) if m else out("hint", word)
     if keywords[word] == "decide":
         return out("decide", f"{word} {rest}")
     return out(keywords[word], rest)
 
 
+def read_input(data):
+    if not isinstance(data, dict):
+        raise ValueError("expected a JSON object")
+    body, labels, has_pr = data.get("body"), data.get("labels", []), data.get("has_pr", False)
+    if body is not None and not isinstance(body, str):
+        raise ValueError("body must be a string")
+    if not isinstance(labels, list) or not all(isinstance(l, str) for l in labels):
+        raise ValueError("labels must be a list of strings")
+    if not isinstance(has_pr, bool):
+        raise ValueError("has_pr must be a boolean")
+    return body or "", labels
+
+
 def main():
     try:
-        data = json.load(sys.stdin)
-        body, labels = data.get("body", ""), list(data.get("labels", []))
-    except (ValueError, AttributeError, TypeError) as e:
+        body, labels = read_input(json.load(sys.stdin))
+    except ValueError as e:
         print(f"reply.py: invalid input: {e}", file=sys.stderr)
         return 2
     print(json.dumps(parse(body, labels)))
