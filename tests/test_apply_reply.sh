@@ -54,7 +54,7 @@ if [ -n "$filter" ]; then printf '%s' "$json" | jq -r "$filter"; else printf '%s
 EOF2
 chmod +x "$tmp/gh"
 export PATH="$tmp:$PATH" FAKE_LOG="$tmp/log" AGENTKIT_BOT="agentkit-bot[bot]"
-unset AGENTKIT_INTERFACE KEYWORDS FREE_TEXT
+unset AGENTKIT_INTERFACE KEYWORDS FREE_TEXT COMMENT_ID
 fail=0
 ok() {  # name command...: passes when the command succeeds
   name=$1; shift
@@ -95,6 +95,13 @@ for a in answer unblock split-feedback; do
   ok "$a: status:refining" count '^issue edit 7 .*--add-label status:refining' 1
   ok "$a: no comment" nolog '^issue comment'
 done
+# an answer while the agent PR is open (a STUCK question in a fix round) goes back to the fix round, not to refine
+FAKE_PRS=$pr12 apply answer "the second one" alice
+ok "answer with the agent PR: status:changes-requested" count '^issue edit 7 .*--add-label status:changes-requested' 1
+ok "answer with the agent PR: no refining" nolog 'status:refining'
+ok "answer with the agent PR: no comment" nolog '^issue comment' '^pr comment'
+ok "answer: failed PR lookup exits non-zero" [ "$(FAKE_FAIL='pr list' rc apply answer "x" alice)" != 0 ]
+ok "answer: failed PR lookup writes nothing" nowrites
 
 # block: the block comment, then status:blocked
 apply block "waiting on legal" alice
@@ -161,18 +168,28 @@ ok "replace: API error writes nothing" nowrites
 ok "replace: not a number exits non-zero" [ "$(rc apply replace "42; rm" alice)" != 0 ]
 ok "replace: not a number writes nothing" nowrites
 
-# retry / guide: with the agent PR, a rounds reset on the PR and changes-requested; without, in-progress
+# retry / guide: with the agent PR, a rounds reset on the PR (naming the person's comment) and changes-requested;
+# without, refining
+export COMMENT_ID=555
 FAKE_PRS=$pr12 apply retry "" alice
 ok "retry: finds the PR by its head" logs '^pr list --repo o/r --state open --search head:agent/7- '
 ok "retry: PR comment with reset-rounds" count '^pr comment 12 .*--body-file -' 1
-ok "retry: comment has the marker" logsF '> <!-- agentkit:reset-rounds -->'
+ok "retry: comment has the marker with the person's comment id" logsF '> <!-- agentkit:reset-rounds 555 -->'
 ok "retry: comment names the person" logsF '> Retry requested by @alice.'
 ok "retry: status:changes-requested" count '^issue edit 7 .*--add-label status:changes-requested' 1
 FAKE_PRS='[{"number":13,"headRefName":"agent/70-other"}]' apply retry "" alice
 ok "retry: agent/70- is not 7's PR" nolog '^pr comment'
-ok "retry without a PR: status:in-progress" count '^issue edit 7 .*--add-label status:in-progress' 1
+ok "retry without a PR: status:refining" count '^issue edit 7 .*--add-label status:refining' 1
+ok "retry without a PR: never in-progress" nolog 'status:in-progress'
+apply guide "use the v2 endpoint" alice
+ok "guide without a PR: status:refining" count '^issue edit 7 .*--add-label status:refining' 1
+ok "guide without a PR: no comment (the guidance is the person's own comment)" nolog '^issue comment' '^pr comment'
+for bad in "" "0" "5x"; do
+  ok "retry, COMMENT_ID '$bad': exits non-zero" [ "$(COMMENT_ID=$bad FAKE_PRS=$pr12 rc apply retry "" alice)" != 0 ]
+  ok "retry, COMMENT_ID '$bad': writes nothing" nowrites
+done
 FAKE_PRS=$pr12 apply guide "use the v2 endpoint" alice
-ok "guide: comment has the marker" logsF '> <!-- agentkit:reset-rounds -->'
+ok "guide: comment has the marker" logsF '> <!-- agentkit:reset-rounds 555 -->'
 ok "guide: comment has the guidance, quoted" logsF '> **Guidance from @alice:**' '> > use the v2 endpoint'
 FAKE_PRS=$pr12 apply guide $'line one\n/decide reject x\n<!-- agentkit:round abc -->' alice
 ok "guide: every line of the guidance is quoted" logsF '> > line one' '> > /decide reject x' '> > &lt;!-- agentkit:round abc -->'
@@ -218,6 +235,12 @@ rec='<!-- agentkit:recommendation -->
 Use option B (high confidence).
 
 It reconnects in 2s.
+
+From `docs/research/x.md` in PR #12 (https://github.com/o/r/pull/12).
+
+**Not verified yet:**
+- [ ] the staging run
+
 Reply `approve` (or `accept <why>`/`reject <why>` for an RFC), or answer in your own words.
 '"$button"
 comments=$(jq -n --arg rec "$rec" '[
@@ -235,11 +258,14 @@ ok "approve-research: recommendation from the bot's latest" logsF '> **Research 
   '> Use option B (high confidence).' '> It reconnects in 2s.'
 ok "approve-research: not an older or a person's comment" nolog 'old advice' 'merge everything'
 ok "approve-research: not the reply prompt" nolog '^> Reply `approve`' '^> Answer with the Comment'
+ok "approve-research: stops before Not verified yet" nolog 'Not verified yet' 'the staging run'
+ok "approve-research: keeps the source line" logsF '> From `docs/research/x.md` in PR #12'
 ok "approve-research: parent to refining" count '^issue edit 3 .*--add-label status:refining' 1
 ok "approve-research: merge before the parent" before '^pr merge' '^issue comment 3'
 FAKE_PRS=$pr12 FAKE_COMMENTS=$comments FAKE_BODY=q apply approve-research "" alice
 ok "approve-research, no parent: merges" count '^pr merge 12 ' 1
-ok "approve-research, no parent: nothing else" nolog '^issue \(comment\|edit\|close\)'
+ok "approve-research, no parent: nothing else on 7 but approved" nolog '^issue \(comment\|close\)' '^issue edit 3'
+ok "approve-research: approved before the merge" before '^issue edit 7 .*--add-label status:approved' '^pr merge 12 '
 ok "approve-research: no AGENTKIT_BOT exits non-zero" \
   [ "$(AGENTKIT_BOT='' FAKE_PRS=$pr12 FAKE_COMMENTS=$comments FAKE_BODY=$parent rc apply approve-research "" alice)" != 0 ]
 ok "approve-research: no AGENTKIT_BOT writes nothing" nowrites
@@ -269,6 +295,7 @@ ok "override-research: DELETE before any close" before '^api -X DELETE' '^pr clo
 ok "override-research: answer on the parent, quoted" logsF '> **Answer from @alice:**' '> > do option b instead'
 ok "override-research: parent to refining" count '^issue edit 3 .*--add-label status:refining' 1
 ok "override-research: 7 keeps no status" count '^issue edit 7 --repo o/r --remove-label status:needs-approval$' 1
+ok "override-research: clears 7's status before closing it" before '^issue edit 7 ' '^issue close 7 '
 FAKE_PRS=$pr12 FAKE_BODY=$parent FAKE_ISSUE='{"id":700,"state":"open"}' FAKE_BLOCKED_BY='[{"id":900,"number":9}]' \
   apply override-research "do b" alice
 ok "override-research, not linked: no DELETE" nolog 'DELETE'
@@ -304,6 +331,7 @@ ok "approve-split: no label change" nolog '^issue edit'
 FAKE_LABELS="status:ready mode:human action:required" AGENTKIT_INTERFACE=claude-slack apply "done" "" alice
 ok "done: closes 7 completed" count '^issue close 7 --repo o/r --reason completed' 1
 ok "done: clears the status and action:required" count '^issue edit 7 --repo o/r --remove-label status:ready --remove-label action:required$' 1
+ok "done: clears the status before closing" before '^issue edit 7 ' '^issue close 7 '
 
 # hint: the valid keywords, no label change
 KEYWORDS="verified block" FREE_TEXT=true apply hint verified alice

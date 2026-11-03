@@ -1,24 +1,28 @@
 #!/usr/bin/env bash
 # Usage: apply-reply.sh <owner/repo> <issue> <action> <arg> <login>
 # Carries out one Slack reply (Claude Code + Slack mode): <action> and <arg> come from reply.py, <login> is the person
-# who answered, or the kit's bot (<app-slug>[bot]) when an agent starts research itself. Env KEYWORDS
+# who answered, or the kit's bot (<app-slug>[bot]) when an agent starts research itself. Env COMMENT_ID, the id of the
+# person's issue comment this reply is, for `retry`/`guide` with the agent PR (the reset-rounds marker names it, and the
+# review gate counts a reset only for a write-access person's comment, once). Env KEYWORDS
 # (space-separated) and FREE_TEXT (true|false, default false), both from reply.py, for
 # `hint`; AGENTKIT_BOT (<app-slug>[bot]) for `approve-research`, which reads the kit's own recommendation comment.
-#   answer, unblock, split-feedback  status:refining
+#   answer              with the agent PR open (a question asked in a fix round): status:changes-requested;
+#                       without: status:refining
+#   unblock, split-feedback  status:refining
 #   research <q>        new type:research issue (status:refining) linked as a blocker; a block comment; status:blocked
 #   block <reason>      a block comment; status:blocked
 #   replace <b>         #b (an open issue here, not this one) becomes a blocker; status:ready
 #   retry, guide <t>    with the agent PR: a reset-rounds comment on it (and the guidance), status:changes-requested;
-#                       without: status:in-progress
+#                       without: status:refining (the guidance is the person's own comment, which refine reads)
 #   verified            ticks the boxes under the PR's Human verification heading (dispatch then approves it)
 #   failed-check <t>    the text on the PR; status:changes-requested
-#   approve-research    merges the research PR; its parent (`<!-- agentkit:research-for #p -->`) gets the
+#   approve-research    status:approved, then merges the research PR; its parent (`<!-- agentkit:research-for #p -->`) gets the
 #                       recommendation and status:refining
 #   override-research <t>  unlinks the research from its parent, closes its PR and the issue (not planned), the parent
 #                       gets the answer and status:refining
 #   decide <accept|reject why>  a /decide comment on the RFC PR
 #   approve-split       a /plan comment
-#   done                closes the issue as completed (and clears its status)
+#   done                clears its status, then closes the issue as completed
 #   hint [word]         a comment listing the valid keywords; no label change
 #   none, or anything else: nothing.
 # The person's text is data: it reaches gh only on stdin (--body-file -, --input -) or through jq --arg/env. It can
@@ -76,7 +80,11 @@ if [ "$len" -gt 60000 ] || [ "$qlen" -gt 65000 ]; then
 fi
 
 case "$action" in
-  answer | unblock | split-feedback) status "$n" status:refining ;;
+  answer)
+    pr=$(agent_pr)
+    if [ -n "$pr" ]; then status "$n" status:changes-requested; else status "$n" status:refining; fi ;;
+
+  unblock | split-feedback) status "$n" status:refining ;;
 
   block)
     comment "$n" "<!-- agentkit:block -->
@@ -121,14 +129,16 @@ case "$action" in
 
   retry | guide)
     pr=$(agent_pr)
-    if [ -z "$pr" ]; then status "$n" status:in-progress; exit 0; fi
+    if [ -z "$pr" ]; then status "$n" status:refining; exit 0; fi
+    cid=${COMMENT_ID:-}
+    [[ $cid =~ ^[1-9][0-9]*$ ]] || usage "$action with a PR needs COMMENT_ID (the person's comment id), got '$cid'"
     if [ "$action" = guide ]; then
-      pr_comment "$pr" "<!-- agentkit:reset-rounds -->
+      pr_comment "$pr" "<!-- agentkit:reset-rounds $cid -->
 **Guidance from @$login:**
 
 $qarg"
     else
-      pr_comment "$pr" "<!-- agentkit:reset-rounds -->
+      pr_comment "$pr" "<!-- agentkit:reset-rounds $cid -->
 Retry requested by @$login."
     fi
     status "$n" status:changes-requested ;;
@@ -159,7 +169,7 @@ $qarg"
       --jq '.[] | select(.user.login == env.AGENTKIT_BOT and (.body | startswith("<!-- agentkit:recommendation -->"))) | .body | tojson')
     rec=
     if [ -n "$latest" ]; then
-      rec=$(tail -n 1 <<<"$latest" | jq -r . | awk 'stop {next} f && (/^Reply `approve`/ || /^Answer with the Comment button/) {stop = 1; next}
+      rec=$(tail -n 1 <<<"$latest" | jq -r . | awk 'stop {next} f && (/^Reply `approve`/ || /^Answer with the Comment button/ || /^\*\*Not verified yet:\*\*/) {stop = 1; next}
                                                     f {print} index($0, "<!-- agentkit:recommendation -->") {f = 1}' | sed '/./,$!d')
       rec=$(unmark "$rec")
     fi
@@ -169,6 +179,8 @@ $qarg"
     if [ -n "$p" ] && [ -z "$rec" ]; then
       comment "$n" "agentkit: found no recommendation from the kit on #$n, so nothing was merged."; exit 0
     fi
+    # approved first: the merge closes the issue, which must not happen while it still waits (an extra Slack card)
+    status "$n" status:approved
     gh pr merge "$pr" --repo "$repo" --squash --delete-branch >/dev/null
     [ -n "$p" ] || exit 0
     comment "$p" "**Research #$n recommends:**
@@ -189,8 +201,9 @@ $rec"
     # unlink first: closing the research as not planned must not count as a dropped dependency of the parent
     [ -z "$linked" ] || gh api -X DELETE "repos/$repo/issues/$p/dependencies/blocked_by/$id" >/dev/null
     [ -z "$pr" ] || gh pr close "$pr" --repo "$repo" --delete-branch --comment "Superseded by @$login's answer." >/dev/null
-    gh issue close "$n" --repo "$repo" --reason "not planned" --comment "Superseded by @$login's answer." >/dev/null
+    # the status goes first, so the issue never closes while it still waits (an extra Slack card)
     status "$n" ""
+    gh issue close "$n" --repo "$repo" --reason "not planned" --comment "Superseded by @$login's answer." >/dev/null
     [ -n "$p" ] || exit 0
     comment "$p" "**Answer from @$login:**
 
@@ -205,10 +218,11 @@ $qarg"
 
   approve-split) comment "$n" "/plan" ;;
 
-  # a closed issue keeps no status (nor action:required), as when its PR merges
+  # a closed issue keeps no status (nor action:required), as when its PR merges; cleared first, so the issue never
+  # closes while it still waits (an extra Slack card)
   done)
-    gh issue close "$n" --repo "$repo" --reason completed >/dev/null
-    status "$n" "" ;;
+    status "$n" ""
+    gh issue close "$n" --repo "$repo" --reason completed >/dev/null ;;
 
   hint)
     list='' kws=()

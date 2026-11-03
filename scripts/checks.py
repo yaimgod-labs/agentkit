@@ -10,13 +10,22 @@
       report (a name also matches "<caller job> / <name>"); since/now: ISO times; timeout: minutes a
       check may stay pending or missing.
       Prints {"verdict": pass|fail|wait|timeout, "failed": [{name, detail}], "pending": [names]}.
-  checks.py rounds BOT < [{"user", "body"}, ...]
+  checks.py rounds BOT < {"comments": [{"user", "body"}, ...], "people": [comment ids]}
       A PR's comments, oldest first; prints how many failed review rounds count: the comments by BOT (the kit)
-      that start with `<!-- agentkit:round` after its latest one that starts with `<!-- agentkit:reset-rounds -->`.
-      Nobody else's comment counts or resets, and a marker inside a comment (quoted check output) is not one.
+      that start with `<!-- agentkit:round` after its latest reset. A reset is a BOT comment that starts with
+      `<!-- agentkit:reset-rounds <id> -->`, where <id> is in `people` (the ids of the issue's comments by people
+      with write access: a Slack retry or guidance) and no earlier reset named it. Nobody else's comment counts or
+      resets, a marker inside a comment (quoted check output) is not one, and an agent that can comment as the kit
+      can neither invent a reset nor replay one. A bare comment list means no people.
+  checks.py decided < {"pr": [bodies], "issue": [bodies]}
+      `true` when a person decided an RFC: `pr` holds the PR's comments and `issue` the issue's comments, both
+      already limited to people with write access (never a bot). A PR comment that starts with
+      `/decide accept|reject`, or an issue comment (a Slack reply) whose first word is accept or reject. Else, or on
+      unreadable input, `false`. The kit's own relayed /decide never counts by itself.
 """
 import fnmatch
 import json
+import re
 import sys
 from datetime import datetime
 
@@ -72,17 +81,35 @@ def gate(doc):
     return {"verdict": verdict, "failed": failed, "pending": pending}
 
 
-def rounds(comments, bot):
-    n = 0
+RESET = re.compile(r"<!-- agentkit:reset-rounds ([1-9][0-9]*) -->")
+
+
+def rounds(doc, bot):
+    comments, people = (doc, []) if isinstance(doc, list) else (doc.get("comments", []), doc.get("people", []))
+    people, used, n = {str(p) for p in people}, set(), 0
     for c in comments:
         body = c.get("body") or ""
         if c.get("user") != bot:
             continue
-        if body.startswith("<!-- agentkit:reset-rounds -->"):
-            n = 0
+        m = RESET.match(body)
+        if m:
+            if m.group(1) in people and m.group(1) not in used:
+                used.add(m.group(1))
+                n = 0
         elif body.startswith("<!-- agentkit:round"):
             n += 1
     return n
+
+
+def decided(doc):
+    if not isinstance(doc, dict):
+        return False
+    pr, issue = doc.get("pr", []), doc.get("issue", [])
+    if not (isinstance(pr, list) and isinstance(issue, list) and all(isinstance(b, str) for b in pr + issue)):
+        return False
+    if any(re.match(r"/decide (accept|reject)\b", b, re.I) for b in pr):
+        return True
+    return any((b.split(None, 1) or [""])[0].rstrip(".,:!").lower() in ("accept", "reject") for b in issue)
 
 
 def main(argv):
@@ -92,6 +119,12 @@ def main(argv):
         print(json.dumps(gate(json.load(sys.stdin))))
     elif argv[:1] == ["rounds"] and len(argv) == 2 and argv[1]:
         print(rounds(json.load(sys.stdin), argv[1]))
+    elif argv == ["decided"]:
+        try:
+            ok = decided(json.load(sys.stdin))
+        except Exception:
+            ok = False
+        print("true" if ok else "false")
     else:
         print(__doc__)
         return 2

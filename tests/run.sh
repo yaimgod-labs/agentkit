@@ -13,6 +13,7 @@ tests/test_blockers.sh
 tests/test_drop_dependency.sh
 tests/test_hold.sh
 tests/test_apply_reply.sh
+tests/test_people.sh
 tests/test_checklist.sh
 tests/test_upgrade.sh
 python3 tests/test_marketplace.py
