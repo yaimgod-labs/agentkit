@@ -102,7 +102,7 @@ for labels in (["status:in-progress"], ["status:review"], ["status:ready"], ["ty
 
 # has_pr is accepted and changes nothing
 expect("has_pr ignored", reply("verified", *NV, has_pr=True) == reply("verified", *NV, has_pr=False))
-expect("has_pr may be absent", json.loads(run_raw(json.dumps({"body": "done", "labels": RH})).stdout) == {"action": "done", "arg": ""})
+expect("has_pr may be absent", json.loads(run_raw(json.dumps({"body": "done", "labels": RH})).stdout) == {"action": "done", "arg": "", "keywords": ["done", "block"]})
 
 # parsing details
 expect("newline after the keyword", act("block\nwaiting on legal", *NI) == ("block", "waiting on legal"), act("block\nwaiting on legal", *NI))
@@ -121,7 +121,17 @@ for raw in ('[]', '"x"', '{"body": 123, "labels": []}', '{"body": "a", "labels":
             '{"body": "a", "labels": "status:ready"}', '{"body": "a", "labels": [], "has_pr": "yes"}'):
     r = run_raw(raw)
     expect(f"bad input {raw} exits 2", r.returncode == 2 and r.stderr and not r.stdout, (r.returncode, r.stderr, r.stdout))
-expect("null body is empty", json.loads(run_raw('{"body": null, "labels": ["status:needs-info"]}').stdout) == {"action": "hint", "arg": ""})
+expect("null body is empty", json.loads(run_raw('{"body": null, "labels": ["status:needs-info"]}').stdout) == {"action": "hint", "arg": "", "keywords": ["research", "block"]})
+
+# keywords: the keywords valid for the status, in table order, whatever the reply was; none has none
+for labels, want in [(NI, ["research", "block"]), (NH, ["retry", "research", "block"]), (NV, ["verified", "block"]),
+                     (NA_R, ["approve", "block"]), (NA_F, ["accept", "reject", "block"]), (NA_S, ["approve", "block"]),
+                     (BL, ["unblock", "replace"]), (RH, ["done", "block"])]:
+    for body in ("free text here", "verified", ""):
+        got = reply(body, *labels)["keywords"]
+        expect(f"keywords for {labels} on {body!r}", got == want, got)
+for labels in (["status:in-progress"], ["status:ready"], []):
+    expect(f"no keywords for {labels}", reply("approve", *labels)["keywords"] == [])
 
 # invalid JSON
 r = run_raw("not json")
