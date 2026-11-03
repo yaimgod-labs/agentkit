@@ -35,13 +35,13 @@ on:
 permissions: {}
 
 jobs:
+  # this event's own work (merge close and task done, verification approve, /decide, request changes, dropped
+  # dependencies, board sync). No concurrency group: GitHub keeps one pending run per group and cancels the older
+  # one, which would lose the event
+  # ponytail: events for one issue may overlap; each step re-reads the status first. Add a per-issue lock if they collide
   dispatch:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # one dispatcher run at a time per repo; queued runs are not cancelled
-    concurrency:
-      group: agentkit-dispatch-${{ github.repository }}
-      cancel-in-progress: false
     env:
       AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
     steps:
@@ -244,6 +244,45 @@ jobs:
               gh pr comment "$PR" --repo "$REPO" --body "agentkit: the implementer is already working on this PR and has read its feedback. Request changes again after its next push." ;;
             *) echo "#$n is at '$status'; nothing to do" ;;
           esac
+
+  # promotion counts the issues in flight, so one runs at a time per repo. A pending run that a newer one replaces
+  # loses nothing: the newer run reads the current state and promotes the same way
+  promote:
+    needs: dispatch
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: agentkit-dispatch-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+
+      # the kit's plugin, scripts and actions, from the repo and commit this workflow itself was loaded from
+      # (the caller's `uses:`), so no owner or ref is written down anywhere in the kit
+      - name: Load agentkit
+        id: kit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: dispatch.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          # ponytail: anonymous fetch, so the kit repo must be public; add token auth for a private fork
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+          if [ -d .git ]; then echo .agentkit-kit/ >>.git/info/exclude; fi
+          # a project marketplace (.claude-plugin/marketplace.json) adds the project's own pinned plugins
+          if [ -f .claude-plugin/marketplace.json ]; then echo "project-marketplace=$GITHUB_WORKSPACE" >>"$GITHUB_OUTPUT"; fi
 
       # a runner that died mid-implement runs no "Hand over on failure" step, leaving the issue (and a WIP slot) stuck
       - name: Retry stuck implement runs
