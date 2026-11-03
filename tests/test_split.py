@@ -8,7 +8,7 @@ fails = 0
 
 def run(verdict, cmd="proposal", code=0):
     text = verdict if isinstance(verdict, str) else json.dumps(verdict)
-    r = subprocess.run([sys.executable, str(SCRIPT), cmd], input=text, capture_output=True, text=True)
+    r = subprocess.run([sys.executable, str(SCRIPT), *cmd.split()], input=text, capture_output=True, text=True)
     assert r.returncode == code, (cmd, r.returncode, r.stderr)
     return r.stdout, r.stderr
 
@@ -67,6 +67,35 @@ expect("proposal: a non-object verdict prints nothing and warns", out == "" and 
 deep = "[" * 100000 + "]" * 100000
 out, err = run('{"size":"m","split":' + deep + "}")
 expect("proposal: deeply nested split is ignored, not a crash", out == "" and "::warning::" in err, out + err)
+
+# a research question or an RFC is never split: it keeps today's m/l behavior
+for typ in ("research", "rfc"):
+    out, err = run({**V, "type": typ, "split": two})
+    expect(f"proposal: a {typ} is not split", out == "" and "::warning::" in err, out + err)
+
+
+def eligible(v):
+    r = subprocess.run([sys.executable, str(SCRIPT), "eligible"], input=v if isinstance(v, str) else json.dumps(v),
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+for typ in ("feature", "bug", "chore", "debt"):
+    for size in ("m", "l"):
+        expect(f"eligible: {typ} {size}", eligible({**V, "type": typ, "size": size}) == "true\n")
+for v in [{**V, "type": "research"}, {**V, "type": "rfc", "size": "l"}, {**V, "size": "s"}, {**V, "size": "xs"},
+          {"size": "m"}, [], "not json"]:
+    expect(f"eligible: not {str(v)[:40]!r}", eligible(v) == "false\n")
+expect("eligible: needs no split list", eligible({**V, "split": None}) == "true\n")
+
+# open questions in the plan come before the split
+out, _ = run({**V, "split": two}, cmd="proposal --questions")
+expect("proposal --questions: the questions line before the reply line", out.splitlines()[3:] == [
+    "Answer the questions above first if they change the split.",
+    "Reply `approve` to create these sub-tasks, or say what to change.",
+    "Answer with the Comment button on this issue's card in Slack.",
+], out)
 
 run("", cmd="bogus", code=2)
 expect("unknown command exits 2", True)

@@ -2,8 +2,8 @@
 # status:needs-info issue. Claude (read-only) triages and plans the issue; this
 # workflow posts the plan and questions, sets size/type/mode labels, and moves the
 # issue to status:ready (small and clear) or status:needs-info (assigned to you).
-# In the Claude Code + Slack mode a large task (size m or l) proposes its split for approval (status:needs-approval),
-# or with repo var AUTO_SPLIT=true comments /plan to split at once.
+# In the Claude Code + Slack mode a large task (size m or l, not research or an RFC) proposes its split for
+# approval (status:needs-approval), or with repo var AUTO_SPLIT=true comments /plan to split at once.
 name: agentkit-refine
 
 on:
@@ -191,20 +191,23 @@ jobs:
               asks=$research research='' status=needs-info
             fi
           fi
-          # in the mode a large task (size m or l) is split: at once with AUTO_SPLIT=true (a /plan comment), otherwise
-          # once the person approves the split the verdict proposes (status:needs-approval). Research and questions for
-          # a person come first. A missing or invalid split list (split.py warns) leaves today's needs-info.
+          body=$(grep -v '^VERDICT: ' <<<"$result" || true)
+          # in the mode a large plain task (size m or l, not research or an RFC: split.py eligible) is split: at once
+          # with AUTO_SPLIT=true (a /plan comment), otherwise once the person approves the split the verdict proposes
+          # (status:needs-approval). Research and questions for a person come first. A missing or invalid split list
+          # (split.py warns) leaves today's needs-info.
           split='' proposal=''
           if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] && [ -z "$asks" ] \
-             && jq -e '.size | IN("m", "l")' <<<"$verdict" >/dev/null; then
+             && [ "$(python3 .agentkit-kit/scripts/split.py eligible <<<"$verdict")" = true ]; then
             if [ "$AUTO_SPLIT" = true ]; then
               split=auto
             else
-              proposal=$(python3 .agentkit-kit/scripts/split.py proposal <<<"$verdict")
+              qflag=()
+              if grep -q '^## Questions' <<<"$body"; then qflag=(--questions); fi
+              proposal=$(python3 .agentkit-kit/scripts/split.py proposal "${qflag[@]}" <<<"$verdict")
               if [ -n "$proposal" ]; then split=propose; fi
             fi
           fi
-          body=$(grep -v '^VERDICT: ' <<<"$result" || true)
           # in the mode a comment that leaves the issue waiting on a person (action:required) ends with how to answer
           # (a split proposal is its own comment, with its own closing lines)
           if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] && [ -z "$split" ] \

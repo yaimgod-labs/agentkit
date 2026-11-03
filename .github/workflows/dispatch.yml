@@ -4,7 +4,7 @@
 # non-default branch; approves a PR once its Human verification boxes are ticked;
 # on a `/decide accept|reject <why>` PR comment sends the RFC back to the implementer to record it;
 # on a person's "Request changes" review sends the PR back to the implementer.
-# In the Claude Code + Slack mode it also moves a new issue to status:refining and posts "task done" to Slack.
+# In the Claude Code + Slack mode it also posts "task done" to Slack when an agent PR merges.
 name: agentkit-dispatch
 
 on:
@@ -94,37 +94,6 @@ jobs:
           fid=$(jq -r .id <<<"$field"); oid=$(jq -r --arg s "$stage" '.options[]|select(.name==$s).id' <<<"$field")
           [ -n "$oid" ] || { echo "::warning::board Stage field has no '$stage' option; add it in the project settings"; exit 0; }
           gh project item-edit --project-id "$pid" --id "$item" --field-id "$fid" --single-select-option-id "$oid"
-
-      # Claude Code + Slack mode: a new issue by a trusted author (the bot counts) refines on its own
-      - id: opener
-        if: github.event_name == 'issues' && github.event.action == 'opened' && vars.AGENTKIT_INTERFACE == 'claude-slack'
-        continue-on-error: true  # an untrusted author is ignored, not an error
-        uses: ./.agentkit-kit/.github/actions/trusted
-        with:
-          logins: ${{ github.event.issue.user.login }}
-          token: ${{ steps.app.outputs.token }}
-          bot: ${{ steps.app.outputs.app-slug }}[bot]
-          require-all: "true"
-
-      - name: Refine new issues
-        if: steps.opener.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          REPO: ${{ github.repository }}
-          N: ${{ github.event.issue.number }}
-        run: |
-          # the labels live, not from the event: a status set since (by /task, plan-feature or a person) wins
-          issue=$(gh api "repos/$REPO/issues/$N")
-          if jq -e '.pull_request or .state != "open"' <<<"$issue" >/dev/null; then echo "#$N is not an open issue"; exit 0; fi
-          # /task files its issues refined already and sets their status last
-          if jq -e '(.body // "") | contains("<!-- agentkit:filed-by-task -->")' <<<"$issue" >/dev/null; then
-            echo "#$N was filed by /task"; exit 0
-          fi
-          statuses=$(jq -r '[.labels[].name | select(startswith("status:"))] | join(" ")' <<<"$issue")
-          case "$statuses" in
-            "" | status:backlog) .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:refining ;;
-            *) echo "#$N is at '$statuses'; not refined" ;;
-          esac
 
       - name: Close issue of merged agent PR
         if: github.event_name == 'pull_request' && github.event.pull_request.merged
@@ -263,10 +232,8 @@ jobs:
               || echo "::warning::could not retry or hand over #$n"
           done
 
-      # a new issue only refines (above); the dispatcher's own work runs on its other events
       - name: List ready issues
         id: ready
-        if: ${{ !(github.event_name == 'issues' && github.event.action == 'opened') }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}

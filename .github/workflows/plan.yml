@@ -1,7 +1,8 @@
 # Planner: a "/plan" comment by an org owner/member on an issue turns that issue
 # (the PRD) into an epic with sub-issues labelled status:backlog. In the Claude Code + Slack mode
 # (repo var AGENTKIT_INTERFACE=claude-slack) the sub-issues start at status:refining, and the epic's status is
-# cleared once the planner is done (refine's split approval leaves it at status:needs-approval).
+# cleared once the planner created its sub-issues (refine's split approval leaves it at status:needs-approval).
+# A planner that created none, or the kit's own /plan refused or failed, hands the issue over (status:needs-human).
 name: agentkit-plan
 
 on:
@@ -112,11 +113,37 @@ jobs:
           job: plan
           model: ${{ inputs.model }}
 
-      # epics never carry a status
+      # epics never carry a status. A planner that created no sub-issue hands the issue over instead, so an approved
+      # split never leaves it with no status at all
       - name: Clear the epic's status
         if: env.AGENTKIT_INTERFACE == 'claude-slack'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
           N: ${{ github.event.issue.number }}
-        run: .agentkit-kit/scripts/set-status.sh "$REPO" "$N"
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          subs=$(gh api "repos/$REPO/issues/$N/sub_issues" --jq length)
+          if [ "$subs" -gt 0 ]; then
+            .agentkit-kit/scripts/set-status.sh "$REPO" "$N"
+            exit 0
+          fi
+          gh issue comment "$N" --repo "$REPO" --body "agentkit: the planner created no sub-issues ($RUN). Needs a human."
+          .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human
+
+      # the kit's own /plan (AUTO_SPLIT, or an approved split) that was refused (an untrusted PRD author) or failed:
+      # hand over, so the issue never sits at refining or needs-approval with no run coming. A person's /plan that
+      # fails is theirs to see, and an untrusted one must never move a status.
+      - name: Hand over on failure
+        if: >-
+          (failure() || cancelled()) && env.AGENTKIT_INTERFACE == 'claude-slack' &&
+          steps.app.outputs.app-slug != '' && github.event.comment.user.login == format('{0}[bot]', steps.app.outputs.app-slug)
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          N: ${{ github.event.issue.number }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue comment "$N" --repo "$REPO" --body "agentkit: the split's /plan run was refused or failed ($RUN). Needs a human."
+          .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error \
+            || gh issue edit "$N" --repo "$REPO" --add-label status:needs-human --add-label reason:agent-error --add-label action:required

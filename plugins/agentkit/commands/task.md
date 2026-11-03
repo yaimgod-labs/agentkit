@@ -80,7 +80,7 @@ One edit: `gh issue edit <n> --repo "$REPO" --add-label status:<status>`, with t
 
 If the size is `m` or `l`, propose the split in chat: the sub-tasks as titles, each with one line, and their order. Ask whether to go ahead.
 
-- On the user's OK: use `agentkit:plan-feature` with `<n>` as the epic. Do not label any sub-issue `status:ready`. Then remove the status, since epics never carry one: `gh issue edit <n> --repo "$REPO" --remove-label status:backlog`.
+- On the user's OK: use `agentkit:plan-feature` with `<n>` as the epic, and give it the sub-issue status. In the Claude Code + Slack mode (`gh variable get AGENTKIT_INTERFACE --repo "$REPO"` prints `claude-slack`) that is `status:refining`: each sub-issue then refines on its own in CI. Outside the mode it is `status:backlog`, as today. Never `status:ready`. Then remove the status, since epics never carry one: `gh issue edit <n> --repo "$REPO" --remove-label status:backlog`.
 - Without an OK: leave `<n>` at `status:backlog`, and say so.
 
 ## 8. Reply
