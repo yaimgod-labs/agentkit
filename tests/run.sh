@@ -5,9 +5,12 @@ shellcheck -x -S warning cli/gh-agentkit/gh-agentkit runner/*.sh scripts/*.sh te
   plugins/agentkit/scripts/lint-on-stop.sh templates/.agentkit/*.sh
 echo "shellcheck: ok"
 # macOS ships bash 3.2, which parses some quoting that shellcheck accepts differently
-/bin/bash -n cli/gh-agentkit/gh-agentkit && echo "bash 3.2 parse: ok"
+for f in cli/gh-agentkit/gh-agentkit scripts/*.sh; do /bin/bash -n "$f"; done && echo "bash 3.2 parse: ok"
 tests/test_guard.sh
 tests/test_set_status.sh
+tests/test_blockers.sh
+tests/test_drop_dependency.sh
+tests/test_hold.sh
 tests/test_checklist.sh
 tests/test_upgrade.sh
 python3 tests/test_marketplace.py
@@ -16,4 +19,5 @@ python3 tests/test_caller.py
 python3 tests/test_checks.py
 python3 tests/test_retro.py
 python3 tests/test_permissions.py
-python3 -m py_compile plugins/agentkit/scripts/guard.py plugins/agentkit/scripts/docs.py cli/gh-agentkit/caller.py scripts/checks.py scripts/retro.py
+python3 tests/test_board.py
+python3 -m py_compile plugins/agentkit/scripts/guard.py plugins/agentkit/scripts/docs.py plugins/agentkit/scripts/board.py cli/gh-agentkit/caller.py scripts/checks.py scripts/retro.py

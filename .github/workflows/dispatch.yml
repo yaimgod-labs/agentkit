@@ -1,4 +1,4 @@
-# Dispatcher: promotes the top unblocked status:ready issue (not mode:human, not size:m/l; one debt-label issue in every debt-every)
+# Dispatcher: promotes the top unblocked status:ready issue (board Rank first, then board.py's order; not mode:human, not size:m/l; one debt-label issue in every debt-every)
 # to status:in-progress while fewer than WIP issues are in flight; mirrors status
 # labels onto the board; closes the linked issue when an agent PR merges into a
 # non-default branch; approves a PR once its Human verification boxes are ticked;
@@ -28,6 +28,8 @@ on:
     secrets:
       AGENTKIT_APP_KEY:
         required: true
+      SLACK_WEBHOOK_URL:
+        required: false
 
 permissions: {}
 
@@ -142,6 +144,30 @@ jobs:
           gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx type:rfc || { echo "#$n is not an RFC"; exit 0; }
           .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:changes-requested
 
+      # a dependency that was dropped (closed, not completed) can never unblock its dependents
+      - name: Block dependents of a dropped issue
+        if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason != 'completed'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          N: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+          SLACK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          affected=$(.agentkit-kit/scripts/drop-dependency.sh "$REPO" "$N" "$TITLE")
+          [ -n "$affected" ] || { echo "#$N blocks no open issue"; exit 0; }
+          list=""
+          for d in $affected; do
+            t=$(gh issue view "$d" --repo "$REPO" --json title --jq .title)
+            list+="${list:+, }#$d $t"
+          done
+          echo "blocked: $list"
+          if [ -n "$SLACK" ]; then
+            text="Dropped #$N $TITLE. Blocked: $list"
+            jq -n --arg t "$text" '{text: ($t | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;"))}' \
+              | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$SLACK" >/dev/null || echo "::warning::could not post to Slack"
+          fi
+
       # a person's "Request changes" review: the implementer's fix round reads it with its inline comments
       - id: reviewer
         if: github.event_name == 'pull_request_review'
@@ -181,6 +207,8 @@ jobs:
           WIP: ${{ inputs.wip }}
           EVERY: ${{ inputs.debt-every }}
           DEBT: ${{ inputs.debt-label }}
+          OWNER: ${{ github.repository_owner }}
+          PROJECT: ${{ vars.AGENTKIT_PROJECT }}
         run: |
           # in flight = every agent issue not merged yet: PRs waiting on a person count too, so the agents never
           # stack up more PRs than people merge (each one waiting goes stale against the base)
@@ -194,24 +222,46 @@ jobs:
           # debt quota: debt goes first when none of the last EVERY-1 issues taken into work (open ones in flight,
           # then the most recently closed) was debt, and last otherwise
           # ponytail: "recently closed" includes issues people closed by hand; track promotions if that skews it
+          # the rule itself lives in board.py (debt-due), shared with /board; this only hands it the two lists
           due=false
           if [ "$EVERY" -gt 0 ]; then
-            recent=$( { gh api "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select(.pull_request | not) | [.labels[].name]
-                          | select(any(. == "status:in-progress" or . == "status:review" or . == "status:changes-requested" or . == "status:approved" or . == "status:needs-verification"))
-                          | any(. == env.DEBT)'
-                        gh api "repos/$REPO/issues?state=closed&sort=updated&direction=desc&per_page=50" \
-                          --jq '[.[] | select((.pull_request | not) and .state_reason == "completed")] | sort_by(.closed_at) | reverse | .[] | [.labels[].name] | any(. == env.DEBT)'
-                      } | awk -v n=$((EVERY - 1)) 'NR <= n')  # awk, not head: reads all input, so no SIGPIPE under pipefail
-            grep -qx true <<<"$recent" || due=true
+            open=$(gh api "repos/$REPO/issues?state=open&per_page=100" --jq '[.[] | select(.pull_request | not) | [.labels[].name]]')
+            closed=$(gh api "repos/$REPO/issues?state=closed&sort=updated&direction=desc&per_page=50" \
+              --jq '[.[] | select(.pull_request | not)] | sort_by(.closed_at) | reverse | map({labels: [.labels[].name], closed_at, state_reason})')
+            due=$(jq -n --argjson open "$open" --argjson closed "$closed" '{open: $open, closed: $closed}' \
+              | .agentkit-kit/plugins/agentkit/scripts/board.py debt-due --every "$EVERY" --debt-label "$DEBT")
           fi
           echo "debt due: $due"
+          # manual rank: the NUMBER field `Rank` on the Projects board. A board problem must never stop dispatching,
+          # so any failure here warns and leaves every rank null (today's order)
+          ranks='{}'
+          if [ -n "$PROJECT" ]; then
+            # shellcheck disable=SC2016  # $owner, $number and $endCursor are GraphQL variables, not shell
+            if page=$(gh api graphql --paginate -f owner="$OWNER" -F number="$PROJECT" -f query='
+                query($owner: String!, $number: Int!, $endCursor: String) {
+                  repositoryOwner(login: $owner) { ... on ProjectV2Owner { projectV2(number: $number) {
+                    items(first: 100, after: $endCursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        content { ... on Issue { number repository { nameWithOwner } } }
+                        fieldValueByName(name: "Rank") { ... on ProjectV2ItemFieldNumberValue { number } }
+                      }
+                    }
+                  } } }
+                }' 2>&1) \
+              && r=$(jq -cs --arg repo "$REPO" '[.[].data.repositoryOwner.projectV2.items.nodes[]?
+                       | select(.content.repository.nameWithOwner == $repo and .fieldValueByName.number != null)
+                       | {key: (.content.number | tostring), value: .fieldValueByName.number}] | from_entries' <<<"$page" 2>&1); then
+              ranks=$r
+            else
+              msg=${r:-$page}
+              echo "::warning::could not read the board's Rank field, ordering without ranks: ${msg:0:300}"
+            fi
+          fi
           gh api --paginate "repos/$REPO/issues?state=open&labels=status:ready&per_page=100" \
-            | jq -cs --argjson due "$due" --argjson every "$EVERY" --arg debt "$DEBT" '[.[][] | select(.pull_request | not) | {number, author: .user.login, l: [.labels[].name]}
-                   # only agent work small enough for one PR: mode:human is for people, size:m/l must be split first
-                   | select(.l | any(. == "mode:human" or . == "size:m" or . == "size:l") | not)
-                   | {number, author, d: ($every > 0 and ((.l | index($debt) != null) != $due)),
-                      p: (.l | if index("priority:high") then 0 elif index("priority:medium") then 1 elif index("priority:low") then 2 else 3 end)}]
-                  | sort_by(.d, .p, .number)' >"$RUNNER_TEMP/ready.json"
+            | jq -cs --argjson ranks "$ranks" '[.[][] | select(.pull_request | not)
+                   | {number, author: .user.login, labels: [.labels[].name], rank: ($ranks[.number | tostring] // null)}]' \
+            | .agentkit-kit/plugins/agentkit/scripts/board.py order --debt-due "$due" --debt-every "$EVERY" --debt-label "$DEBT" >"$RUNNER_TEMP/ready.json"
           echo "authors=$(jq -r '[.[].author] | unique | join(" ")' "$RUNNER_TEMP/ready.json")" >>"$GITHUB_OUTPUT"
 
       # prompt-injection guard: only issues written by people with write access (or agentkit itself)
@@ -232,8 +282,15 @@ jobs:
         run: |
           candidates=$(jq -r --arg t " $TRUSTED " '.[] | . as $i | select($t | contains(" \($i.author) ")) | .number' "$RUNNER_TEMP/ready.json")
           for n in $candidates; do
-            open=$(gh api "repos/$REPO/issues/$n/dependencies/blocked_by" --jq '[.[]|select(.state=="open")]|length')
-            if [ "$open" -gt 0 ]; then echo "#$n blocked by $open open issue(s)"; continue; fi
+            # capture first so an API error stops the step (fail closed). hold.sh also moves an issue held by a
+            # dropped blocker to status:blocked, so that never depends on the blocker's `closed` event alone
+            hold=$(.agentkit-kit/scripts/hold.sh "$REPO" "$n")
+            case "$hold" in
+              go) ;;
+              open\ *) echo "#$n waiting on open issue(s): ${hold#open }"; continue ;;
+              blocked\ *) echo "#$n blocked: dropped dependency ${hold#blocked }"; continue ;;
+              *) echo "::error::hold.sh said '$hold' for #$n"; exit 1 ;;
+            esac
             .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:in-progress
             echo "promoted #$n"
             exit 0

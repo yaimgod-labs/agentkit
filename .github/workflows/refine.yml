@@ -134,7 +134,8 @@ jobs:
           verdict=$(sed -n 's/^VERDICT: //p' <<<"$result" | tail -1)
           # trust nothing in the verdict beyond these values
           if ! jq -e '(.status|IN("ready","needs-info")) and (.size|IN("xs","s","m","l"))
-                      and (.type|IN("feature","bug","chore","debt","research","rfc")) and (.mode|IN("agent","human","pair"))' <<<"$verdict" >/dev/null 2>&1; then
+                      and (.type|IN("feature","bug","chore","debt","research","rfc")) and (.mode|IN("agent","human","pair"))
+                      and ((has("blocked_by")|not) or (.blocked_by|type=="array" and all(.[]; type=="number" and .==floor and .>0)))' <<<"$verdict" >/dev/null 2>&1; then
             echo "::error::no valid VERDICT line in the refiner's answer: ${verdict:-none}"
             exit 1
           fi
@@ -147,6 +148,24 @@ jobs:
                    --jq '.labels[].name | select(test("^(size|mode):") or IN("type:feature","type:bug","type:chore","type:debt","type:research","type:rfc"))')
           for l in $new; do args+=(--add-label "$l"); done
           gh issue edit "$N" --repo "$REPO" "${args[@]}" >/dev/null
+          # record the dependencies before the status moves, so the issue never reaches ready ahead of its blockers.
+          # A blocker a person removed with `/board unlink` (its `<!-- agentkit:unlinked #b -->` comment, by the
+          # owner, a member or a collaborator) is never added back. One that fails (closed, missing, already linked)
+          # is a warning and one comment on the issue, not a failed run.
+          unlinked=$(gh api --paginate "repos/$REPO/issues/$N/comments" \
+            --jq '.[] | select(.author_association | IN("OWNER", "MEMBER", "COLLABORATOR")) | .body | scan("<!-- agentkit:unlinked #([0-9]+) -->") | .[0]') \
+            || { echo "::warning::could not read #$N's comments for unlinked blockers"; unlinked=; }
+          failed=
+          while IFS= read -r b; do
+            if grep -qx "$b" <<<"$unlinked"; then echo "#$b was unlinked by a person; not recorded"; continue; fi
+            if ! err=$( { id=$(gh api "repos/$REPO/issues/$b" --jq .id) \
+                          && gh api "repos/$REPO/issues/$N/dependencies/blocked_by" -F issue_id="$id" >/dev/null; } 2>&1 ); then
+              reason=$(tr '\n' ' ' <<<"$err" | cut -c1-300 | sed 's/ *$//')
+              echo "::warning::could not record #$b as a blocker of #$N: $reason"
+              failed+="agentkit: could not record #$b as a blocker: $reason"$'\n'
+            fi
+          done < <(jq -r --argjson n "$N" '(.blocked_by // []) | unique | .[] | select(. != $n)' <<<"$verdict")
+          if [ -n "$failed" ]; then gh issue comment "$N" --repo "$REPO" --body "$failed" >/dev/null || true; fi
           status=$(jq -r .status <<<"$verdict")
           .agentkit-kit/scripts/set-status.sh "$REPO" "$N" "status:$status"
           if [ "$status" = needs-info ] && [ "$SENDER" != "$BOT" ]; then
