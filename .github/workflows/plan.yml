@@ -111,6 +111,8 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.app.outputs.token }}
+          # the kit's bot starts this run in Slack mode (triage, replies, a relayed /plan); the trust step vets the people
+          allowed_bots: ${{ steps.app.outputs.app-slug }}
           plugin_marketplaces: |
             ${{ github.workspace }}/.agentkit-kit
             ${{ steps.kit.outputs.project-marketplace }}
