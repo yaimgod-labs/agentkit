@@ -4,9 +4,12 @@ Python 3.9+, stdlib only.
 
   reply.py
       stdin:  {"body": "approve", "labels": ["status:needs-approval", "type:research", ...], "has_pr": false}
-      stdout: {"action": "approve-research", "arg": "", "keywords": ["approve", "block"]} as one JSON object.
+      stdout: {"action": "approve-research", "arg": "", "keywords": ["approve", "block"], "free_text": true}
+              as one JSON object.
               Invalid JSON on stdin: message on stderr, exit 2. `has_pr` is accepted and not used yet.
               `keywords` lists the keywords valid for the issue's status, in table order (for a `hint`); [] for `none`.
+              `free_text` says whether free text is a real action for the status (false where it is a `hint`,
+              and for `none`).
 
 The reply is matched case-insensitively, after strip(), on its first word with trailing `.,:!` removed. A
 keyword valid for the issue's status gives that status's action; `arg` is the rest of the text after the keyword.
@@ -63,6 +66,7 @@ def parse(body, labels):
     entry = TABLE.get(table_key(labels))
     result = out("none") if entry is None else match(body, *entry)
     result["keywords"] = list(entry[0]) if entry else []
+    result["free_text"] = entry is not None and entry[1] != "hint"
     return result
 
 

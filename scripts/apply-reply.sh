@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Usage: apply-reply.sh <owner/repo> <issue> <action> <arg> <login>
 # Carries out one Slack reply (Claude Code + Slack mode): <action> and <arg> come from reply.py, <login> is the person
-# who answered. Env KEYWORDS (space-separated, from reply.py) for `hint`; AGENTKIT_BOT (<app-slug>[bot]) for
-# `approve-research`, which reads the kit's own recommendation comment.
+# who answered. Env KEYWORDS (space-separated) and FREE_TEXT (true|false, default false), both from reply.py, for
+# `hint`; AGENTKIT_BOT (<app-slug>[bot]) for `approve-research`, which reads the kit's own recommendation comment.
 #   answer, unblock, split-feedback  status:refining
 #   research <q>        new type:research issue (status:refining) linked as a blocker; a block comment; status:blocked
 #   block <reason>      a block comment; status:blocked
 #   replace <b>         #b (an open issue here, not this one) becomes a blocker; status:ready
-#   retry, guide <t>    with the agent PR: a rounds-reset comment on it (and the guidance), status:changes-requested;
+#   retry, guide <t>    with the agent PR: a reset-rounds comment on it (and the guidance), status:changes-requested;
 #                       without: status:in-progress
 #   verified            ticks the boxes under the PR's Human verification heading (dispatch then approves it)
 #   failed-check <t>    the text on the PR; status:changes-requested
@@ -20,8 +20,11 @@
 #   done                closes the issue as completed (and clears its status)
 #   hint [word]         a comment listing the valid keywords; no label change
 #   none, or anything else: nothing.
-# The person's text is data: it reaches gh only on stdin (--body-file -, --input -) or through jq --arg/env.
-# Every read comes before the first write and any error stops the script (fail closed).
+# The person's text is data: it reaches gh only on stdin (--body-file -, --input -) or through jq --arg/env. It can
+# never forge a kit marker: `<!--` in it is escaped, and it never starts a line of a kit comment (it is quoted as a
+# blockquote, or collapsed onto the kit's own line). A reply over 60000 characters gets one comment and nothing else.
+# Every read comes before the first write and any error stops the script (fail closed); a read helper returns
+# non-zero on a failed read, so `x=$(helper)` stops the script too.
 set -euo pipefail
 repo=$1 n=$2 action=$3 arg=${4:-} login=${5:-}
 here=$(cd "$(dirname "$0")" && pwd)
@@ -35,9 +38,19 @@ esac
 usage() { echo "apply-reply.sh: $1" >&2; exit 2; }
 [[ $n =~ ^[1-9][0-9]*$ ]] || usage "issue must be a number, got '$n'"
 [[ $login =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || usage "invalid login '$login'"
+
+# the person's text on one line, or as a blockquote; `<!--` escaped in both
+one_line() { jq -rn --arg t "$1" '$t | gsub("<!--"; "&lt;!--") | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "")'; }
+quoted() { jq -rn --arg t "$1" '$t | gsub("<!--"; "&lt;!--") | split("\n") | map("> " + .) | join("\n")'; }
+unmark() { jq -rn --arg t "$1" '$t | gsub("<!--"; "&lt;!--")'; }
+chars() { jq -rn --arg t "$1" '$t | length'; }
+larg=$(one_line "$arg")
+qarg=$(quoted "$arg")
 case "$action" in
-  research | block | guide | failed-check | override-research | decide) [ -n "$arg" ] || usage "$action needs text" ;;
+  research | block | guide | failed-check | override-research | decide) [ -n "$larg" ] || usage "$action needs text" ;;
 esac
+len=$(chars "$arg")
+qlen=$(chars "$qarg")
 
 status() { "$here/set-status.sh" "$repo" "$1" "$2"; }
 comment() { printf '%s\n' "$2" | gh issue comment "$1" --repo "$repo" --body-file - >/dev/null; }
@@ -47,32 +60,42 @@ agent_pr() {
   gh pr list --repo "$repo" --state open --search "head:agent/$n-" --json number,headRefName \
     --jq '[.[]|select(.headRefName|startswith("agent/'"$n"'-"))][0].number // empty'
 }
-# the issue a research issue answers, from its body marker; empty when there is none
+# the issue a research issue answers, from the body's last marker (the kit appends it); empty when there is none
 parent() {
   local p
   p=$(gh issue view "$n" --repo "$repo" --json body \
-    --jq '[.body | capture("<!-- agentkit:research-for #(?<p>[1-9][0-9]*) -->")][0].p // empty')
+    --jq '[.body | scan("<!-- agentkit:research-for #([1-9][0-9]*) -->")] | last | .[0] // empty') || return 1
   [ "$p" = "$n" ] || echo "$p"
 }
+
+# the comment limit is 65536 characters; the quoted form is checked too, as "> " lengthens every line
+if [ "$len" -gt 60000 ] || [ "$qlen" -gt 65000 ]; then
+  comment "$n" "agentkit: that reply is too long (over 60000 characters); shorten it and answer again."
+  exit 0
+fi
 
 case "$action" in
   answer | unblock | split-feedback) status "$n" status:refining ;;
 
   block)
     comment "$n" "<!-- agentkit:block -->
-**Blocked by @$login:** $arg"
+**Blocked by @$login:** $larg"
     status "$n" status:blocked ;;
 
   research)
-    req=$(jq -nc --arg q "$arg" --arg login "$login" --argjson n "$n" '{
-      title: ("Research: " + ($q | gsub("\\s+"; " ") | .[:80] | sub(" $"; ""))),
+    req=$(jq -nc --arg l "$larg" --arg q "$qarg" --arg login "$login" --argjson n "$n" '{
+      title: ("Research: " + ($l | .[:80] | sub(" $"; ""))),
       body: "## Question\n\($q)\n\nAsked by @\($login) on #\($n).\n\n## Acceptance criteria\n- [ ] The doc answers the question with a recommendation and its confidence\n- [ ] It names what was checked (sources, code, measurements)\n\n<!-- agentkit:research-for #\($n) -->",
       labels: ["type:research", "status:refining"]}')
     # one call creates the issue and returns both its number and its id (the dependency API takes the id)
     created=$(printf '%s\n' "$req" | gh api "repos/$repo/issues" --input - --jq '"\(.number) \(.id)"')
     read -r r rid <<<"$created"
     [[ $r =~ ^[0-9]+$ && $rid =~ ^[0-9]+$ ]] || { echo "apply-reply.sh: unexpected create answer '$created'" >&2; exit 1; }
-    gh api "repos/$repo/issues/$n/dependencies/blocked_by" -F issue_id="$rid" >/dev/null
+    # an unlinked research issue would not hold #n: close it again (best effort) and fail
+    if ! gh api "repos/$repo/issues/$n/dependencies/blocked_by" -F issue_id="$rid" >/dev/null; then
+      gh issue close "$r" --repo "$repo" --reason "not planned" --comment "agentkit: could not link this to #$n; closing." >/dev/null || true
+      exit 1
+    fi
     comment "$n" "<!-- agentkit:block -->
 **Blocked:** waiting on research #$r"
     status "$n" status:blocked ;;
@@ -99,12 +122,12 @@ case "$action" in
     pr=$(agent_pr)
     if [ -z "$pr" ]; then status "$n" status:in-progress; exit 0; fi
     if [ "$action" = guide ]; then
-      pr_comment "$pr" "<!-- agentkit:rounds-reset -->
+      pr_comment "$pr" "<!-- agentkit:reset-rounds -->
 **Guidance from @$login:**
 
-$arg"
+$qarg"
     else
-      pr_comment "$pr" "<!-- agentkit:rounds-reset -->
+      pr_comment "$pr" "<!-- agentkit:reset-rounds -->
 Retry requested by @$login."
     fi
     status "$n" status:changes-requested ;;
@@ -125,18 +148,19 @@ Retry requested by @$login."
     [ -n "$pr" ] || { comment "$n" "agentkit: no open PR for #$n to send the failed check to."; exit 0; }
     pr_comment "$pr" "**Check failed (from @$login):**
 
-$arg"
+$qarg"
     status "$n" status:changes-requested ;;
 
   approve-research)
     : "${AGENTKIT_BOT:?set AGENTKIT_BOT to the bot login of the kit (<app-slug>[bot])}"
     # the kit's latest recommendation comment (only its own: anyone can post the marker); one JSON string per line
     latest=$(gh api --paginate "repos/$repo/issues/$n/comments" \
-      --jq '.[] | select(.user.login == env.AGENTKIT_BOT and (.body | contains("<!-- agentkit:recommendation -->"))) | .body | tojson')
+      --jq '.[] | select(.user.login == env.AGENTKIT_BOT and (.body | startswith("<!-- agentkit:recommendation -->"))) | .body | tojson')
     rec=
     if [ -n "$latest" ]; then
       rec=$(tail -n 1 <<<"$latest" | jq -r . | awk 'stop {next} f && (/^Reply `approve`/ || /^Answer with the Comment button/) {stop = 1; next}
                                                     f {print} index($0, "<!-- agentkit:recommendation -->") {f = 1}' | sed '/./,$!d')
+      rec=$(unmark "$rec")
     fi
     p=$(parent)
     pr=$(agent_pr)
@@ -169,14 +193,14 @@ $rec"
     [ -n "$p" ] || exit 0
     comment "$p" "**Answer from @$login:**
 
-$arg"
+$qarg"
     status "$p" status:refining ;;
 
   decide)
-    case "$arg" in "accept "?* | "reject "?*) ;; *) usage "decide needs 'accept <why>' or 'reject <why>'" ;; esac
+    case "$larg" in "accept "?* | "reject "?*) ;; *) usage "decide needs 'accept <why>' or 'reject <why>'" ;; esac
     pr=$(agent_pr)
     [ -n "$pr" ] || { comment "$n" "agentkit: no open PR for #$n to decide on."; exit 0; }
-    pr_comment "$pr" "/decide $arg (from @$login in Slack)" ;;
+    pr_comment "$pr" "/decide $larg (from @$login in Slack)" ;;
 
   approve-split) comment "$n" "/plan" ;;
 
@@ -193,9 +217,12 @@ $arg"
       list="$list${list:+, }\`$k\`"
     done
     # the reply on one line, at most 80 characters, without backticks (so it stays inside its code span)
-    shown=$(jq -rn --arg a "$arg" '$a | gsub("`"; "'"'"'") | gsub("\\s+"; " ") | .[:80] | sub("^ +"; "") | sub(" +$"; "")')
+    shown=$(jq -rn --arg a "$larg" '$a | gsub("`"; "'"'"'") | gsub("\\s+"; " ") | .[:80] | sub("^ +"; "") | sub(" +$"; "")')
     if [ -n "$shown" ]; then msg="agentkit: \`$shown\` doesn't apply to this issue right now."; else msg="agentkit: that reply was empty."; fi
-    if [ -n "$list" ]; then msg="$msg Answer with one of: $list, or with free text."; else msg="$msg Answer with free text."; fi
+    free=
+    [ "${FREE_TEXT:-false}" != true ] || free=1
+    if [ -n "$list" ]; then msg="$msg Answer with one of: $list${free:+, or with free text}."
+    elif [ -n "$free" ]; then msg="$msg Answer with free text."; fi
     comment "$n" "$msg
 
 $button" ;;

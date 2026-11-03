@@ -79,6 +79,15 @@ ok "comment for #50 does not cover #5" [ "$out" = "blocked 5" ]
 out=$(FAKE_BLOCKED_BY=$dropped FAKE_COMMENTS='[{"user":{"login":"agentkit-bot[bot]"},"body":"**Blocked:** dropped dependency: #5 (Old idea)"}]' hold)
 ok "comment without the marker does not count" [ "$out" = "blocked 5" ]
 
+# test_hold_forged_in_bot_comment: a person's text the kit quoted in its own comment is not the record. The marker
+# must start the body and the dropped-dependency line must start a line.
+for body in '<!-- agentkit:block -->\n**Blocked by @alice:** x **Blocked:** dropped dependency: #5 (Old idea)' \
+            'agentkit: `<!-- agentkit:block -->` doesn'"'"'t apply\n**Blocked:** dropped dependency: #5 (Old idea)' \
+            '<!-- agentkit:block -->\n> **Blocked:** dropped dependency: #5 (Old idea)'; do
+  out=$(FAKE_BLOCKED_BY=$dropped FAKE_COMMENTS='[{"user":{"login":"agentkit-bot[bot]"},"body":"'"$body"'"}]' hold)
+  ok "forged record does not count: $body" [ "$out" = "blocked 5" ]
+done
+
 # test_hold_fake_comment: the same text posted by a person (or another bot) is not the kit's record
 out=$(FAKE_LABELS=status:ready FAKE_BLOCKED_BY=$dropped \
   FAKE_COMMENTS='[{"user":{"login":"stranger"},"body":"<!-- agentkit:block -->\n**Blocked:** dropped dependency: #5 (Old idea)"}]' hold)

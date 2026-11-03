@@ -7,7 +7,8 @@ trap 'rm -rf "$tmp"' EXIT
 cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$1 $2" in
-  "issue view")  # apply the --jq filter the script passed, over a JSON array built from FAKE_LABELS
+  "issue view")  # apply the --jq filter the script passed, over a JSON array built from FAKE_LABELS; FAKE_FAIL fails
+    [ -z "${FAKE_FAIL:-}" ] || { echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; }
     while [ "$1" != --jq ]; do shift; done
     printf '%s\n' $FAKE_LABELS | jq -R '{name: .}' | jq -s '{labels: .}' | jq -r "$2" ;;
   "issue edit") shift 2; echo "$*" >"$FAKE_OUT" ;;
@@ -52,4 +53,11 @@ check "mode:human status:refining action:required" status:ready "7 --repo o/r --
 check "status:review" status:needs-info "7 --repo o/r --remove-label status:review --add-label status:needs-info"
 check "status:needs-info action:required" status:refining "7 --repo o/r --remove-label status:needs-info --add-label status:refining"
 check "status:review" status:needs-info "7 --repo o/r --remove-label status:review --add-label status:needs-info" "" other
+# a failed label read stops before the edit (fail closed): otherwise the old status would stay beside the new one
+for mode in "" $S; do
+  rm -f "$FAKE_OUT"
+  if FAKE_FAIL=1 AGENTKIT_INTERFACE=$mode FAKE_LABELS=status:review "$here/../scripts/set-status.sh" o/r 7 status:refining 2>/dev/null; then rc=0; else rc=$?; fi
+  if [ "$rc" != 0 ] && [ ! -e "$FAKE_OUT" ]; then echo "ok: failed read${mode:+ ($mode)}: no edit, exit $rc"
+  else echo "FAIL: failed read${mode:+ ($mode)}: exit $rc, edit '$(cat "$FAKE_OUT" 2>/dev/null)'"; fail=1; fi
+done
 exit $fail

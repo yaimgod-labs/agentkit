@@ -12,6 +12,8 @@ slack=0 want_wait=0 has_wait=0 human=0
 [ "${AGENTKIT_INTERFACE:-}" != claude-slack ] || slack=1
 filter='.labels[].name | select(startswith("status:") or startswith("reason:"))'
 [ "$slack" -eq 0 ] || filter='.labels[].name | select(startswith("status:") or startswith("reason:") or . == "action:required" or . == "mode:human")'
+# capture first so a failed read stops the script before the edit (fail closed)
+labels=$(gh issue view "$n" --repo "$repo" --json labels --jq "$filter")
 args=()
 while IFS= read -r l; do
   case "$l" in
@@ -19,7 +21,7 @@ while IFS= read -r l; do
     mode:human) human=1; continue ;;
   esac
   [ -z "$l" ] || [ "$l" = "$status" ] || [ "$l" = "$reason" ] || args+=(--remove-label "$l")
-done < <(gh issue view "$n" --repo "$repo" --json labels --jq "$filter")
+done <<<"$labels"
 if [ "$slack" -eq 1 ]; then
   case "$status" in
     status:needs-info | status:needs-human | status:needs-verification | status:needs-approval) want_wait=1 ;;

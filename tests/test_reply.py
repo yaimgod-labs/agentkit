@@ -102,7 +102,7 @@ for labels in (["status:in-progress"], ["status:review"], ["status:ready"], ["ty
 
 # has_pr is accepted and changes nothing
 expect("has_pr ignored", reply("verified", *NV, has_pr=True) == reply("verified", *NV, has_pr=False))
-expect("has_pr may be absent", json.loads(run_raw(json.dumps({"body": "done", "labels": RH})).stdout) == {"action": "done", "arg": "", "keywords": ["done", "block"]})
+expect("has_pr may be absent", json.loads(run_raw(json.dumps({"body": "done", "labels": RH})).stdout) == {"action": "done", "arg": "", "keywords": ["done", "block"], "free_text": False})
 
 # parsing details
 expect("newline after the keyword", act("block\nwaiting on legal", *NI) == ("block", "waiting on legal"), act("block\nwaiting on legal", *NI))
@@ -121,7 +121,7 @@ for raw in ('[]', '"x"', '{"body": 123, "labels": []}', '{"body": "a", "labels":
             '{"body": "a", "labels": "status:ready"}', '{"body": "a", "labels": [], "has_pr": "yes"}'):
     r = run_raw(raw)
     expect(f"bad input {raw} exits 2", r.returncode == 2 and r.stderr and not r.stdout, (r.returncode, r.stderr, r.stdout))
-expect("null body is empty", json.loads(run_raw('{"body": null, "labels": ["status:needs-info"]}').stdout) == {"action": "hint", "arg": "", "keywords": ["research", "block"]})
+expect("null body is empty", json.loads(run_raw('{"body": null, "labels": ["status:needs-info"]}').stdout) == {"action": "hint", "arg": "", "keywords": ["research", "block"], "free_text": True})
 
 # keywords: the keywords valid for the status, in table order, whatever the reply was; none has none
 for labels, want in [(NI, ["research", "block"]), (NH, ["retry", "research", "block"]), (NV, ["verified", "block"]),
@@ -132,6 +132,14 @@ for labels, want in [(NI, ["research", "block"]), (NH, ["retry", "research", "bl
         expect(f"keywords for {labels} on {body!r}", got == want, got)
 for labels in (["status:in-progress"], ["status:ready"], []):
     expect(f"no keywords for {labels}", reply("approve", *labels)["keywords"] == [])
+
+# free_text: whether free text is a real action for the status (not a hint), whatever the reply was
+for labels, want in [(NI, True), (NH, True), (NV, True), (NA_R, True), (NA_F, False), (NA_S, True), (BL, False), (RH, False)]:
+    for body in ("free text here", "verified", ""):
+        got = reply(body, *labels)["free_text"]
+        expect(f"free_text for {labels} on {body!r}", got is want, got)
+for labels in (["status:in-progress"], ["status:ready"], []):
+    expect(f"no free text for {labels}", reply("approve", *labels)["free_text"] is False)
 
 # invalid JSON
 r = run_raw("not json")
