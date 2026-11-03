@@ -1,5 +1,7 @@
 # Planner: a "/plan" comment by an org owner/member on an issue turns that issue
-# (the PRD) into an epic with sub-issues labelled status:backlog.
+# (the PRD) into an epic with sub-issues labelled status:backlog. In the Claude Code + Slack mode
+# (repo var AGENTKIT_INTERFACE=claude-slack) the sub-issues start at status:refining, and the epic's status is
+# cleared once the planner is done (refine's split approval leaves it at status:needs-approval).
 name: agentkit-plan
 
 on:
@@ -35,6 +37,8 @@ jobs:
     concurrency:
       group: agentkit-issue-${{ github.repository }}-${{ github.event.issue.number }}
       cancel-in-progress: false
+    env:
+      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
     steps:
       - id: app
         uses: actions/create-github-app-token@v3
@@ -93,6 +97,7 @@ jobs:
           prompt: |
             Repository ${{ github.repository }}. Issue #${{ github.event.issue.number }} is the PRD.
             Use the agentkit:plan-feature skill with that issue as the epic. Do not edit repository files.
+            Sub-issue status: ${{ vars.AGENTKIT_INTERFACE == 'claude-slack' && 'status:refining' || 'status:backlog' }}
           claude_args: >-
             --model ${{ inputs.model }}
             --max-turns 60
@@ -106,3 +111,12 @@ jobs:
           execution-file: ${{ steps.claude.outputs.execution_file }}
           job: plan
           model: ${{ inputs.model }}
+
+      # epics never carry a status
+      - name: Clear the epic's status
+        if: env.AGENTKIT_INTERFACE == 'claude-slack'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          N: ${{ github.event.issue.number }}
+        run: .agentkit-kit/scripts/set-status.sh "$REPO" "$N"

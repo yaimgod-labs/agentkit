@@ -25,4 +25,6 @@ python3 tests/test_board.py
 python3 tests/test_reply.py
 python3 tests/test_recommendation.py
 python3 tests/test_ask.py
-python3 -m py_compile plugins/agentkit/scripts/guard.py plugins/agentkit/scripts/docs.py plugins/agentkit/scripts/board.py cli/gh-agentkit/caller.py scripts/checks.py scripts/retro.py scripts/reply.py scripts/recommendation.py scripts/ask.py
+python3 tests/test_split.py
+python3 tests/test_done.py
+python3 -m py_compile plugins/agentkit/scripts/guard.py plugins/agentkit/scripts/docs.py plugins/agentkit/scripts/board.py cli/gh-agentkit/caller.py scripts/checks.py scripts/retro.py scripts/reply.py scripts/recommendation.py scripts/ask.py scripts/split.py scripts/done.py

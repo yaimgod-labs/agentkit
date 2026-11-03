@@ -4,6 +4,7 @@
 # non-default branch; approves a PR once its Human verification boxes are ticked;
 # on a `/decide accept|reject <why>` PR comment sends the RFC back to the implementer to record it;
 # on a person's "Request changes" review sends the PR back to the implementer.
+# In the Claude Code + Slack mode it also moves a new issue to status:refining and posts "task done" to Slack.
 name: agentkit-dispatch
 
 on:
@@ -94,17 +95,63 @@ jobs:
           [ -n "$oid" ] || { echo "::warning::board Stage field has no '$stage' option; add it in the project settings"; exit 0; }
           gh project item-edit --project-id "$pid" --id "$item" --field-id "$fid" --single-select-option-id "$oid"
 
+      # Claude Code + Slack mode: a new issue by a trusted author (the bot counts) refines on its own
+      - id: opener
+        if: github.event_name == 'issues' && github.event.action == 'opened' && vars.AGENTKIT_INTERFACE == 'claude-slack'
+        continue-on-error: true  # an untrusted author is ignored, not an error
+        uses: ./.agentkit-kit/.github/actions/trusted
+        with:
+          logins: ${{ github.event.issue.user.login }}
+          token: ${{ steps.app.outputs.token }}
+          bot: ${{ steps.app.outputs.app-slug }}[bot]
+          require-all: "true"
+
+      - name: Refine new issues
+        if: steps.opener.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          N: ${{ github.event.issue.number }}
+        run: |
+          # the labels live, not from the event: a status set since (by /task, plan-feature or a person) wins
+          issue=$(gh api "repos/$REPO/issues/$N")
+          if jq -e '.pull_request or .state != "open"' <<<"$issue" >/dev/null; then echo "#$N is not an open issue"; exit 0; fi
+          # /task files its issues refined already and sets their status last
+          if jq -e '(.body // "") | contains("<!-- agentkit:filed-by-task -->")' <<<"$issue" >/dev/null; then
+            echo "#$N was filed by /task"; exit 0
+          fi
+          statuses=$(jq -r '[.labels[].name | select(startswith("status:"))] | join(" ")' <<<"$issue")
+          case "$statuses" in
+            "" | status:backlog) .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:refining ;;
+            *) echo "#$N is at '$statuses'; not refined" ;;
+          esac
+
       - name: Close issue of merged agent PR
         if: github.event_name == 'pull_request' && github.event.pull_request.merged
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
           HEAD: ${{ github.event.pull_request.head.ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          SLACK: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
           [ -n "$n" ] || exit 0
           gh issue close "$n" --repo "$REPO" --reason completed || true  # already closed when merged into the default branch
           .agentkit-kit/scripts/set-status.sh "$REPO" "$n" || true
+          # Claude Code + Slack mode: "task done" in the channel (the issue's title, else the PR's); never fails the step
+          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -n "$SLACK" ]; then
+            title=$(gh issue view "$n" --repo "$REPO" --json title --jq .title) || title=$PR_TITLE
+            if text=$(jq -n --argjson n "$n" --arg t "$title" --arg b "$PR_BODY" --arg u "$PR_URL" \
+                        '{number: $n, title: $t, body: $b, url: $u}' | python3 .agentkit-kit/scripts/done.py); then
+              jq -n --arg t "$text" '{text: $t}' \
+                | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$SLACK" >/dev/null || echo "::warning::could not post to Slack"
+            else
+              echo "::warning::could not build the task-done message for #$n"
+            fi
+          fi
 
       - name: Approve after human verification
         if: github.event_name == 'pull_request' && github.event.action == 'edited'
@@ -216,8 +263,10 @@ jobs:
               || echo "::warning::could not retry or hand over #$n"
           done
 
+      # a new issue only refines (above); the dispatcher's own work runs on its other events
       - name: List ready issues
         id: ready
+        if: ${{ !(github.event_name == 'issues' && github.event.action == 'opened') }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}

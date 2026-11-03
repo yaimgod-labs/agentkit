@@ -37,12 +37,14 @@ cat >"$T/body.md" <<'EOF'
 
 ## Acceptance criteria
 <from the refine output>
+
+<!-- agentkit:filed-by-task -->
 EOF
 gh issue create --repo "$REPO" --title "<short title>" --body-file "$T/body.md" \
   --label size:<size> --label type:<type> --label mode:<mode>
 ```
 
-No `status:*` label yet: an issue labelled `status:ready` before its blockers are linked could be started in the gap. Keep the issue number (`<n>`) from the URL `gh` prints.
+No `status:*` label yet: an issue labelled `status:ready` before its blockers are linked could be started in the gap. Every body this command files ends with the `<!-- agentkit:filed-by-task -->` line: in the Claude Code + Slack mode a new issue without a status refines on its own, and that line tells the kit this one is refined already and gets its status from this command (step 6). Keep the issue number (`<n>`) from the URL `gh` prints.
 
 ## 4. Dependencies
 
@@ -61,6 +63,8 @@ cat >"$T/research.md" <<'EOF'
 
 ## Acceptance criteria
 - [ ] <what the answer must cover>
+
+<!-- agentkit:filed-by-task -->
 EOF
 gh issue create --repo "$REPO" --title "<short question>" --body-file "$T/research.md" \
   --label type:research --label status:refining

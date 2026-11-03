@@ -2,6 +2,8 @@
 # status:needs-info issue. Claude (read-only) triages and plans the issue; this
 # workflow posts the plan and questions, sets size/type/mode labels, and moves the
 # issue to status:ready (small and clear) or status:needs-info (assigned to you).
+# In the Claude Code + Slack mode a large task (size m or l) proposes its split for approval (status:needs-approval),
+# or with repo var AUTO_SPLIT=true comments /plan to split at once.
 name: agentkit-refine
 
 on:
@@ -164,6 +166,7 @@ jobs:
           GH_TOKEN: ${{ steps.write.outputs.token }}
           EXEC: ${{ steps.claude.outputs.execution_file }}
           BOT: ${{ steps.write.outputs.app-slug }}[bot]
+          AUTO_SPLIT: ${{ vars.AUTO_SPLIT }}
         run: |
           result=$(jq -r '[.[] | select(.type=="result")] | last | .result // ""' "$EXEC")
           verdict=$(sed -n 's/^VERDICT: //p' <<<"$result" | tail -1)
@@ -188,9 +191,23 @@ jobs:
               asks=$research research='' status=needs-info
             fi
           fi
+          # in the mode a large task (size m or l) is split: at once with AUTO_SPLIT=true (a /plan comment), otherwise
+          # once the person approves the split the verdict proposes (status:needs-approval). Research and questions for
+          # a person come first. A missing or invalid split list (split.py warns) leaves today's needs-info.
+          split='' proposal=''
+          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] && [ -z "$asks" ] \
+             && jq -e '.size | IN("m", "l")' <<<"$verdict" >/dev/null; then
+            if [ "$AUTO_SPLIT" = true ]; then
+              split=auto
+            else
+              proposal=$(python3 .agentkit-kit/scripts/split.py proposal <<<"$verdict")
+              if [ -n "$proposal" ]; then split=propose; fi
+            fi
+          fi
           body=$(grep -v '^VERDICT: ' <<<"$result" || true)
           # in the mode a comment that leaves the issue waiting on a person (action:required) ends with how to answer
-          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] \
+          # (a split proposal is its own comment, with its own closing lines)
+          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] && [ -z "$split" ] \
              && { [ "$status" = needs-info ] || jq -e '.status == "ready" and .mode == "human"' <<<"$verdict" >/dev/null; }; then
             closing="Answer with the Comment button on this issue's card in Slack."
             if grep -q '^## Questions' <<<"$body"; then
@@ -239,6 +256,15 @@ jobs:
               AGENTKIT_BOT=$BOT .agentkit-kit/scripts/apply-reply.sh "$REPO" "$N" research "$q" "$BOT" </dev/null
             done <<<"$research"
             exit 0
+          fi
+          # the bot's /plan runs the planner, which turns this issue into an epic (plan.yml clears its status)
+          if [ "$split" = auto ]; then
+            gh issue comment "$N" --repo "$REPO" --body "/plan" >/dev/null
+            exit 0
+          fi
+          if [ "$split" = propose ]; then
+            printf '%s\n' "$proposal" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
+            status=needs-approval
           fi
           .agentkit-kit/scripts/set-status.sh "$REPO" "$N" "status:$status"
           if [ "$status" = needs-info ] && [ "$SENDER" != "$BOT" ]; then

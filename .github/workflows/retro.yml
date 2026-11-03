@@ -1,6 +1,7 @@
 # Weekly retro: scripts/retro.py counts the week (cycle time, fix rounds, handovers, Claude usage); a read-only Claude
 # reads the issues behind them and proposes at most 3 changes; the result is posted as a Discussion.
-# Subscribe the Slack channel to Discussions and the retro shows up there too.
+# Subscribe the Slack channel to Discussions and the retro shows up there too. In the Claude Code + Slack mode
+# (repo var AGENTKIT_INTERFACE=claude-slack) no subscription is needed: one line with its link goes to SLACK_WEBHOOK_URL.
 name: agentkit-retro
 
 on:
@@ -31,6 +32,8 @@ on:
         required: true
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      SLACK_WEBHOOK_URL:
+        required: false
 
 permissions: {}
 
@@ -43,6 +46,7 @@ jobs:
     env:
       REPO: ${{ github.repository }}
       DAYS: ${{ inputs.days }}
+      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
     steps:
       # the workflow's own token: create-github-app-token has no discussions input, so this one keeps the
       # installation's permissions; it never reaches Claude
@@ -154,6 +158,7 @@ jobs:
           GH_TOKEN: ${{ steps.write.outputs.token }}
           EXEC: ${{ steps.claude.outputs.execution_file }}
           CATEGORY: ${{ inputs.category }}
+          SLACK: ${{ secrets.SLACK_WEBHOOK_URL }}
           Q_IDS: 'query($o:String!,$r:String!){repository(owner:$o,name:$r){id discussionCategories(first:50){nodes{id name}}}}'
           Q_POST: 'mutation($r:ID!,$c:ID!,$t:String!,$b:String!){createDiscussion(input:{repositoryId:$r,categoryId:$c,title:$t,body:$b}){discussion{url}}}'
         run: |
@@ -164,4 +169,11 @@ jobs:
           rid=$(jq -r .data.repository.id <<<"$ids")
           cid=$(jq -r --arg c "$CATEGORY" '.data.repository.discussionCategories.nodes[] | select(.name == $c) | .id' <<<"$ids")
           [ -n "$cid" ] || { echo "::error::no Discussions category '$CATEGORY': turn Discussions on (gh agentkit upgrade does), or set the retro's category input"; exit 1; }
-          gh api graphql -f r="$rid" -f c="$cid" -f t="Retro: $DAYS days to $(date -u +%F)" -f b="$body" --jq .data.createDiscussion.discussion.url -f query="$Q_POST"
+          title="Retro: $DAYS days to $(date -u +%F)"
+          url=$(gh api graphql -f r="$rid" -f c="$cid" -f t="$title" -f b="$body" --jq .data.createDiscussion.discussion.url -f query="$Q_POST")
+          echo "$url"
+          # Claude Code + Slack mode: one line in the channel; optional, and a failure only warns
+          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -n "$SLACK" ]; then
+            jq -n --arg t "Weekly retro: $title $url" '{text: ($t | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;"))}' \
+              | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$SLACK" >/dev/null || echo "::warning::could not post to Slack"
+          fi
