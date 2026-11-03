@@ -292,15 +292,21 @@ jobs:
         run: |
           summary=$(jq -r '[.[] | select(.type=="result")] | last | .result // ""' "$EXEC" 2>/dev/null || true)
           # the implementer may stop with a last `STUCK: {...}` line (implement-issue step 10); ask.py validates it, and
-          # an invalid one counts as absent
-          stuck=$(python3 .agentkit-kit/scripts/ask.py stuck <<<"$summary")
+          # an invalid one counts as absent. A failure of the script itself never changes today's path
+          stuck=$(python3 .agentkit-kit/scripts/ask.py stuck <<<"$summary") || stuck=
           if [ -n "$stuck" ] && [ "$AGENTKIT_INTERFACE" = claude-slack ]; then
             # Claude Code + Slack mode: ask the person on the issue, or file the research, instead of a PR. Commits made
             # so far stay on the branch, which the next implement run reuses once the answer is in
+            kind=$(jq -r .kind <<<"$stuck")
+            # research stays one level deep: an issue that is research already asks a person instead
+            if [ "$kind" = research ]; then
+              issue=$(gh issue view "$N" --repo "$REPO" --json labels,body)
+              [ "$(python3 .agentkit-kit/scripts/ask.py nested <<<"$issue")" = false ] || kind=question
+            fi
             if [ "$(git rev-parse HEAD)" != "$START" ]; then
               git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${BRANCH}"
             fi
-            if [ "$(jq -r .kind <<<"$stuck")" = question ]; then
+            if [ "$kind" = question ]; then
               msg=$(python3 .agentkit-kit/scripts/ask.py message <<<"$stuck")
               printf '%s\n' "$msg" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
               .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-info

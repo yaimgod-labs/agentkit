@@ -5,13 +5,18 @@ before it reaches a comment.
 
   ask.py stuck < claude-final-message
       The last line that starts with `STUCK: `, as compact JSON, when it is an object with `kind` "question" or
-      "research", a non-empty string `text`, and `why`/`checked` strings when present. Otherwise nothing (an invalid
-      STUCK line is treated as absent).
+      "research", a non-empty string `text`, and `why`/`checked` strings when present. Each field is at most 2000
+      characters, and a research `text` at most 300 (refine's rule). Otherwise nothing: an invalid STUCK line, or
+      one that cannot be parsed at all (deep nesting), is treated as absent, and the command never fails on it.
   ask.py research < verdict-json
       Refine's optional `research` key: 1-3 non-empty strings of at most 300 characters. Prints each on one line
       (whitespace collapsed). Absent: nothing. Invalid: nothing, and a ::warning:: on stderr.
   ask.py message < stuck-json
-      The stuck message for the issue: each field on one line, `<!--` escaped to `&lt;!--`, cut at 2000 characters.
+      The stuck message for the issue (for either kind): each field on one line, `<!--` escaped to `&lt;!--`.
+  ask.py nested < issue-json ({labels, body}, as `gh issue view --json labels,body` prints it)
+      `true` when the issue is research already (label type:research, or the kit's `<!-- agentkit:research-for #`
+      marker in its body), else `false`. Such an issue files no further research: its research questions go to a
+      person as stuck messages, so research stays one level deep. Unreadable or unexpected input prints `true` (fail safe).
 """
 import json
 import sys
@@ -20,37 +25,50 @@ KINDS = ("question", "research")
 BUTTON = "Answer with the Comment button on this issue's card in Slack."
 REPLY = "Reply with an answer, `research <what to find out>`, or `block <reason>`."
 FIELD_MAX = 2000
+RESEARCH_MAX = 300
+MARKER = "<!-- agentkit:research-for #"
 
 
-def one_line(s, limit=None):
-    s = " ".join(s.replace("<!--", "&lt;!--").split())
-    if limit and len(s) > limit:
-        s = s[:limit].rstrip() + " …"
-    return s
+def one_line(s):
+    return " ".join(s.replace("<!--", "&lt;!--").split())
 
 
 def valid_stuck(d):
     return (isinstance(d, dict) and d.get("kind") in KINDS
             and isinstance(d.get("text"), str) and d["text"].strip() != ""
-            and all(isinstance(d[k], str) for k in ("why", "checked") if k in d))
+            and len(d["text"]) <= (RESEARCH_MAX if d["kind"] == "research" else FIELD_MAX)
+            and all(isinstance(d[k], str) and len(d[k]) <= FIELD_MAX for k in ("why", "checked") if k in d))
 
 
 def stuck(text):
     lines = [l[len("STUCK: "):] for l in text.splitlines() if l.startswith("STUCK: ")]
     if not lines:
         return None
+    # anything that goes wrong reading agent text (RecursionError on deep nesting, on Python <= 3.13) means absent
     try:
         d = json.loads(lines[-1])
-    except ValueError:
+        return d if valid_stuck(d) else None
+    except Exception:
         return None
-    return d if valid_stuck(d) else None
+
+
+def nested(text):
+    try:
+        issue = json.loads(text)
+        labels, body = issue.get("labels") or [], issue.get("body") or ""
+        if not isinstance(labels, list) or not isinstance(body, str):
+            return True  # not the shape gh prints: fail safe
+        names = [l.get("name") if isinstance(l, dict) else l for l in labels]
+        return "type:research" in names or MARKER in body
+    except Exception:
+        return True
 
 
 def research(verdict):
     """The questions, or None when the key is absent; raises ValueError when it is invalid."""
     try:
         v = json.loads(verdict)
-    except ValueError:
+    except Exception:
         raise ValueError("the verdict is not JSON")
     if not isinstance(v, dict) or "research" not in v:
         return None
@@ -63,7 +81,7 @@ def research(verdict):
 
 def message(d):
     def field(k):
-        return one_line(d.get(k) or "", FIELD_MAX) or "(not given)"
+        return one_line(d.get(k) or "") or "(not given)"
     return "\n".join([
         f"**Stuck on:** {field('text')}",
         f"**Why I can't decide alone:** {field('why')}",
@@ -75,7 +93,7 @@ def message(d):
 
 
 def main(argv):
-    if len(argv) != 1 or argv[0] not in ("stuck", "research", "message"):
+    if len(argv) != 1 or argv[0] not in ("stuck", "research", "message", "nested"):
         print(__doc__, file=sys.stderr)
         return 2
     text = sys.stdin.buffer.read().decode("utf-8", "replace")
@@ -86,13 +104,18 @@ def main(argv):
     elif argv[0] == "research":
         try:
             qs = research(text)
-        except ValueError as e:
+        except Exception as e:
             print(f"::warning::ignoring the verdict's research key: {e}", file=sys.stderr)
             qs = None
         for q in qs or []:
             print(q)
+    elif argv[0] == "nested":
+        print("true" if nested(text) else "false")
     else:
-        d = json.loads(text)
+        try:
+            d = json.loads(text)
+        except Exception:
+            d = None
         if not valid_stuck(d):
             print("ask.py: not a valid STUCK object", file=sys.stderr)
             return 2

@@ -75,6 +75,10 @@ jobs:
           LOGIN: ${{ github.event.comment.user.login }}
           AGENTKIT_BOT: ${{ steps.app.outputs.app-slug }}[bot]
         run: |
+          # defense in depth: the kit never answers itself (its own stuck messages and pings land on waiting issues);
+          # login and type come from the event file, not an expression
+          author=$(jq -r '"\(.comment.user.login // "") \(.comment.user.type // "")"' "$GITHUB_EVENT_PATH")
+          if [ "${author% *}" = "$AGENTKIT_BOT" ] || [ "${author##* }" = Bot ]; then echo "#$N: a bot's comment; nothing to do"; exit 0; fi
           # the comment body is read from the event file with jq, never through an expression or one env value
           # (one argument or env value is capped at 128 KiB on Linux; apply-reply.sh takes the text as an argument)
           size=$(jq -j '.comment.body // ""' "$GITHUB_EVENT_PATH" | wc -c)

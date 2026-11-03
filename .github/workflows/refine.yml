@@ -178,8 +178,16 @@ jobs:
           # Claude Code + Slack mode: the verdict's optional research key (1-3 questions; ask.py validates it and warns
           # on a bad one) files each question as a research issue, and the issue waits on them (status:blocked)
           # instead of taking the verdict's status. Outside the mode the key is ignored.
-          research=
+          research='' asks=''
           if [ "$AGENTKIT_INTERFACE" = claude-slack ]; then research=$(python3 .agentkit-kit/scripts/ask.py research <<<"$verdict"); fi
+          # research stays one level deep: on an issue that is research already (by its labels, body marker or this
+          # verdict), the questions go to a person as stuck messages and the issue waits for the answer (needs-info)
+          if [ -n "$research" ]; then
+            issue=$(gh issue view "$N" --repo "$REPO" --json labels,body)
+            if [ "$(python3 .agentkit-kit/scripts/ask.py nested <<<"$issue")" != false ] || jq -e '.type == "research"' <<<"$verdict" >/dev/null; then
+              asks=$research research='' status=needs-info
+            fi
+          fi
           body=$(grep -v '^VERDICT: ' <<<"$result" || true)
           # in the mode a comment that leaves the issue waiting on a person (action:required) ends with how to answer
           if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] \
@@ -217,6 +225,14 @@ jobs:
             fi
           done < <(jq -r --argjson n "$N" '(.blocked_by // []) | unique | .[] | select(. != $n)' <<<"$verdict")
           if [ -n "$failed" ]; then gh issue comment "$N" --repo "$REPO" --body "$failed" >/dev/null || true; fi
+          if [ -n "$asks" ]; then
+            while IFS= read -r q; do
+              msg=$(jq -nc --arg q "$q" '{kind: "question", text: $q,
+                why: "This issue is research already, so the kit asks a person instead of filing more research.",
+                checked: "The plan above."}' | python3 .agentkit-kit/scripts/ask.py message)
+              printf '%s\n' "$msg" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
+            done <<<"$asks"
+          fi
           if [ -n "$research" ]; then
             # the kit asks, so the bot is the asker; apply-reply.sh links each issue as a blocker and sets status:blocked
             while IFS= read -r q; do

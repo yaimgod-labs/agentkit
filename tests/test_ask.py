@@ -77,8 +77,49 @@ expect("message: no line of agent text starts a kit marker", not any(l.startswit
 out, _ = run("message", json.dumps({"kind": "question", "text": "only text"}))
 expect("message: missing why/checked say so", "**Why I can't decide alone:** (not given)" in out
        and "**Checked:** (not given)" in out, out)
-out, _ = run("message", json.dumps({"kind": "question", "text": "y" * 5000}))
-expect("message: a very long field is cut", len(out) < 2600 and "…" in out, len(out))
+r = subprocess.run([sys.executable, str(SCRIPT), "message"], input=json.dumps({"kind": "question", "text": "y" * 2001}),
+                   capture_output=True, text=True)
+expect("message: an over-long field is refused", r.returncode == 2, r.returncode)
+out, _ = run("message", json.dumps({"kind": "research", "text": "how fast is X"}))
+expect("message: a research STUCK can be posted as a question", out.startswith("**Stuck on:** how fast is X\n"), out)
+
+# --- deep nesting never crashes (RecursionError on Python 3.9-3.13): the line is absent
+deep = "[" * 100000 + "]" * 100000
+out, _ = run("stuck", "STUCK: " + deep)
+expect("stuck: deeply nested JSON is absent, not a crash", out == "", out)
+out, _ = run("stuck", 'STUCK: {"kind":"question","text":"x","why":' + deep + "}")
+expect("stuck: deeply nested field is absent, not a crash", out == "", out)
+out, err = run("research", '{"research":' + deep + "}")
+expect("research: deeply nested key is ignored with a warning", out == "" and "::warning::" in err, out + err)
+out, _ = run("nested", '{"labels":[],"body":' + deep + "}")
+expect("nested: deeply nested issue JSON counts as nested (fail safe)", out == "true\n", out)
+
+# --- length caps: research text at most 300, question fields at most 2000
+out, _ = run("stuck", 'STUCK: ' + json.dumps({"kind": "research", "text": "r" * 300}))
+expect("stuck: research text of 300 characters is valid", out != "", out)
+out, _ = run("stuck", 'STUCK: ' + json.dumps({"kind": "research", "text": "r" * 301}))
+expect("stuck: research text over 300 characters is absent", out == "", out)
+out, _ = run("stuck", 'STUCK: ' + json.dumps({"kind": "question", "text": "q" * 2000, "why": "w" * 2000, "checked": "c" * 2000}))
+expect("stuck: question fields of 2000 characters are valid", out != "", out)
+for k in ("text", "why", "checked"):
+    d = {"kind": "question", "text": "q"}
+    d[k] = "z" * 2001
+    out, _ = run("stuck", "STUCK: " + json.dumps(d))
+    expect(f"stuck: question {k} over 2000 characters is absent", out == "", out)
+d = {"kind": "research", "text": "r", "why": "w" * 2001}
+out, _ = run("stuck", "STUCK: " + json.dumps(d))
+expect("stuck: research why over 2000 characters is absent", out == "", out)
+
+# --- nested: an issue that is research already (type:research, or the kit's research-for marker) files no research
+def nested(issue):
+    return run("nested", json.dumps(issue))[0]
+expect("nested: type:research label", nested({"labels": [{"name": "type:research"}], "body": "q"}) == "true\n")
+expect("nested: labels as plain names", nested({"labels": ["type:research"], "body": ""}) == "true\n")
+expect("nested: research-for marker in the body",
+       nested({"labels": [{"name": "type:feature"}], "body": "## Question\nx\n\n<!-- agentkit:research-for #7 -->"}) == "true\n")
+expect("nested: an ordinary issue", nested({"labels": [{"name": "type:feature"}], "body": "do X"}) == "false\n")
+expect("nested: null body and no labels", nested({"labels": None, "body": None}) == "false\n")
+expect("nested: not JSON counts as nested (fail safe)", run("nested", "oops")[0] == "true\n")
 
 r = subprocess.run([sys.executable, str(SCRIPT), "bogus"], input="", capture_output=True, text=True)
 expect("unknown command exits 2", r.returncode == 2, r.returncode)
