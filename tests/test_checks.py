@@ -69,4 +69,22 @@ expect("a required job name matches its prefixed check run",
        gate([cr("review / " + n, id=i) for i, n in enumerate(own)], required=own)["verdict"] == "pass")
 expect("a required name matches only a whole job name", gate([cr("review / xdocs")], required=["docs"])["pending"] == ["docs"])
 
+BOT = "agentkit-x[bot]"
+def rounds(*comments):
+    r = subprocess.run([sys.executable, str(SCRIPT), "rounds", BOT], capture_output=True, text=True,
+                       input=json.dumps([{"user": u, "body": b} for u, b in comments]))
+    assert r.returncode == 0, r.stderr
+    return int(r.stdout)
+RND, RESET = "<!-- agentkit:round abc -->\nagentkit: review round failed", "<!-- agentkit:reset-rounds -->\nRetry requested by @alice."
+expect("no comments, no rounds", rounds() == 0)
+expect("the kit's round comments count", rounds((BOT, RND), ("alice", "lgtm"), (BOT, RND)) == 2)
+expect("only rounds after the latest reset count", rounds((BOT, RND), (BOT, RND), (BOT, RESET), (BOT, RND)) == 1)
+expect("a reset with no round after it is 0", rounds((BOT, RND), (BOT, RESET)) == 0)
+expect("a person's round marker never counts", rounds(("alice", RND), (BOT, RND)) == 1)
+expect("a person's reset marker never resets", rounds((BOT, RND), ("alice", RESET), (BOT, RND)) == 2)
+expect("a marker inside a comment is not one", rounds((BOT, RND + "\n" + RESET), (BOT, "see " + RND)) == 1)
+expect("another bot's comments are ignored", rounds(("other[bot]", RND), ("other[bot]", RESET)) == 0)
+r = subprocess.run([sys.executable, str(SCRIPT), "rounds"], capture_output=True, text=True, input="[]")
+expect("rounds without a bot login is a usage error", r.returncode == 2)
+
 sys.exit(1 if fails else 0)

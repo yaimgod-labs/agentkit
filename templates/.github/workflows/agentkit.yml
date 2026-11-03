@@ -46,10 +46,12 @@ jobs:
 
   refine:
     # status:refining, or a person (not a bot) answering on a status:needs-info issue
+    # (in the Claude Code + Slack mode the reply job takes that answer and sets status:refining)
     if: >-
       (github.event_name == 'issues' && github.event.label.name == 'status:refining') ||
       (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
-       github.event.comment.user.type != 'Bot' && contains(github.event.issue.labels.*.name, 'status:needs-info'))
+       github.event.comment.user.type != 'Bot' && contains(github.event.issue.labels.*.name, 'status:needs-info') &&
+       vars.AGENTKIT_INTERFACE != 'claude-slack')
     uses: your-org/agentkit/.github/workflows/refine.yml@v1
     secrets:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
@@ -73,6 +75,18 @@ jobs:
     secrets:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  reply:
+    # Claude Code + Slack mode (AGENTKIT_INTERFACE=claude-slack): a person's answer on a waiting issue,
+    # posted from its Slack card's Comment button, carries out the reply's action
+    if: >-
+      github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
+      github.event.comment.user.type != 'Bot' && vars.AGENTKIT_INTERFACE == 'claude-slack' &&
+      (contains(github.event.issue.labels.*.name, 'action:required') ||
+       contains(github.event.issue.labels.*.name, 'status:blocked'))
+    uses: your-org/agentkit/.github/workflows/reply.yml@v1
+    secrets:
+      AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
 
   review:
     # PR pushes run the full review; other CI apps' results and the schedule re-run only its gate

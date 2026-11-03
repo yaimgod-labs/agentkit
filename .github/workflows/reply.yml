@@ -1,0 +1,109 @@
+# Claude Code + Slack mode: a person answers a waiting issue (action:required or status:blocked) with the Comment
+# button on its Slack card, and Slack's GitHub app posts that answer as an issue comment by the person's account.
+# This workflow maps the comment to one action (scripts/reply.py) and carries it out (scripts/apply-reply.sh).
+# The caller runs it only when AGENTKIT_INTERFACE is claude-slack.
+name: agentkit-reply
+
+on:
+  workflow_call:
+    inputs:
+      agentkit-ref:
+        description: Override the kit commit, branch or tag to load scripts and the plugin from (default — the commit the caller's `uses:` resolved to)
+        type: string
+        default: ""
+    secrets:
+      AGENTKIT_APP_KEY:
+        required: true
+
+permissions: {}
+
+jobs:
+  reply:
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions: {}
+    # one reply per issue at a time, in order; none is cancelled
+    concurrency:
+      group: agentkit-reply-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    env:
+      REPO: ${{ github.repository }}
+      N: ${{ github.event.issue.number }}
+      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-issues: write
+          permission-pull-requests: write
+          permission-contents: write  # merging an approved research PR and deleting its branch
+          permission-actions: read  # Load agentkit reads this run's referenced workflows
+
+      # the kit's scripts and actions, from the repo and commit this workflow itself was loaded from
+      # (the caller's `uses:`), so no owner or ref is written down anywhere in the kit
+      - name: Load agentkit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: reply.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+
+      # prompt-injection guard: only answers from people with write access drive the task
+      - id: trust
+        continue-on-error: true  # an untrusted commenter is ignored, not an error
+        uses: ./.agentkit-kit/.github/actions/trusted
+        with:
+          logins: ${{ github.event.comment.user.login }}
+          token: ${{ steps.app.outputs.token }}
+          bot: ${{ steps.app.outputs.app-slug }}[bot]
+          require-all: "true"
+
+      - name: Apply the reply
+        if: steps.trust.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          LOGIN: ${{ github.event.comment.user.login }}
+          AGENTKIT_BOT: ${{ steps.app.outputs.app-slug }}[bot]
+        run: |
+          # the comment body is read from the event file with jq, never through an expression or one env value
+          # (one argument or env value is capped at 128 KiB on Linux; apply-reply.sh takes the text as an argument)
+          size=$(jq -j '.comment.body // ""' "$GITHUB_EVENT_PATH" | wc -c)
+          if [ "$size" -gt 100000 ]; then
+            gh issue comment "$N" --repo "$REPO" --body "agentkit: that reply is too long (over 60000 characters); shorten it and answer again."
+            exit 0
+          fi
+          # the issue as it is now, not as the event saw it: an earlier reply may have moved it on.
+          # Captured first so an API error fails the step (fail closed; the next step hands over)
+          issue=$(gh issue view "$N" --repo "$REPO" --json state,labels)
+          [ "$(jq -r .state <<<"$issue")" = OPEN ] || { echo "#$N is closed; nothing to do"; exit 0; }
+          out=$(jq -c --argjson issue "$issue" '{body: (.comment.body // ""), labels: [$issue.labels[].name]}' "$GITHUB_EVENT_PATH" \
+            | python3 .agentkit-kit/scripts/reply.py)
+          action=$(jq -r .action <<<"$out")
+          arg=$(jq -r .arg <<<"$out")
+          KEYWORDS=$(jq -r '.keywords | join(" ")' <<<"$out")
+          FREE_TEXT=$(jq -r .free_text <<<"$out")
+          export KEYWORDS FREE_TEXT
+          # the person's text is never echoed: a log line can carry workflow commands
+          echo "#$N: $action"
+          .agentkit-kit/scripts/apply-reply.sh "$REPO" "$N" "$action" "$arg" "$LOGIN"
+
+      # without this a failed reply leaves the person waiting on an answer that never came
+      - name: Hand over on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf '%s\n' "agentkit: could not apply your reply ($RUN). Needs a human." "" \
+            "Answer with the Comment button on this issue's card in Slack." | gh issue comment "$N" --repo "$REPO" --body-file -
+          # the kit may not have loaded if the run failed early
+          .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error \
+            || gh issue edit "$N" --repo "$REPO" --add-label status:needs-human --add-label reason:agent-error --add-label action:required

@@ -10,6 +10,10 @@
       report (a name also matches "<caller job> / <name>"); since/now: ISO times; timeout: minutes a
       check may stay pending or missing.
       Prints {"verdict": pass|fail|wait|timeout, "failed": [{name, detail}], "pending": [names]}.
+  checks.py rounds BOT < [{"user", "body"}, ...]
+      A PR's comments, oldest first; prints how many failed review rounds count: the comments by BOT (the kit)
+      that start with `<!-- agentkit:round` after its latest one that starts with `<!-- agentkit:reset-rounds -->`.
+      Nobody else's comment counts or resets, and a marker inside a comment (quoted check output) is not one.
 """
 import fnmatch
 import json
@@ -68,11 +72,26 @@ def gate(doc):
     return {"verdict": verdict, "failed": failed, "pending": pending}
 
 
+def rounds(comments, bot):
+    n = 0
+    for c in comments:
+        body = c.get("body") or ""
+        if c.get("user") != bot:
+            continue
+        if body.startswith("<!-- agentkit:reset-rounds -->"):
+            n = 0
+        elif body.startswith("<!-- agentkit:round"):
+            n += 1
+    return n
+
+
 def main(argv):
     if argv[:1] == ["select"]:
         print(json.dumps(select(argv[1] if len(argv) > 1 else "", sys.stdin.read().split())))
     elif argv[:1] == ["gate"]:
         print(json.dumps(gate(json.load(sys.stdin))))
+    elif argv[:1] == ["rounds"] and len(argv) == 2 and argv[1]:
+        print(rounds(json.load(sys.stdin), argv[1]))
     else:
         print(__doc__)
         return 2
