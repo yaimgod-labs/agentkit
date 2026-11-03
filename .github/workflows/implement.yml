@@ -280,10 +280,11 @@ jobs:
             comments and the end of each failed job's log) and fix every blocking finding.
             Commit your work. Do not push, do not open a PR, do not change labels.
             ${{ vars.AGENTKIT_INTERFACE == 'claude-slack' && 'The Claude Code + Slack mode is on: if you cannot meet the acceptance criteria without a person''s answer or new knowledge, use the skill''s stuck exit (a last `STUCK:` line).' || '' }}
+          # research issues get the web to check primary sources; their output is a doc PR that the gate and a person approve
           claude_args: >-
             --model ${{ inputs.model }}
             --max-turns ${{ inputs.max-turns }}
-            --allowedTools Bash,Read,Edit,Write,MultiEdit,Glob,Grep,Skill,Task,TodoWrite
+            --allowedTools Bash,Read,Edit,Write,MultiEdit,Glob,Grep,Skill,Task,TodoWrite${{ contains(github.event.issue.labels.*.name, 'type:research') && ',WebSearch,WebFetch' || '' }}
 
       - name: Usage
         if: always() && steps.claude.outputs.execution_file != ''

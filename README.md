@@ -193,7 +193,7 @@ Loose ideas start in Discussions (**Ideas**; `setup` enables Discussions). When 
 | "what is true / what are the options?" | `type:research` (`/research <question>` or the Research form) | `docs/research/<slug>.md` | feeds an RFC or a feature |
 | "how should we build it?" | `type:rfc` (`/rfc <problem>` or the RFC form) | `docs/rfcs/NNNN-slug.md`, `status: proposed`: options with for and against, recommendation, consequences, rejected options, open questions, threat model when security is involved | you `/decide` on the PR, merge, then `/plan` the accepted RFC into feature issues |
 
-Both run through the normal lifecycle (refine → implement → review); the agent writes docs only and never decides an RFC. Decision records in `docs/decisions/` are what later agents and reviewers hold the code to.
+Both run through the normal lifecycle (refine → implement → review); the agent writes docs only and never decides an RFC. Research runs alone get web search and fetch, to check primary sources. Decision records in `docs/decisions/` are what later agents and reviewers hold the code to.
 
 A failed `docs` job fails the review round like any other check and posts what to fix on the PR; the implementer gets it in its fix-round feedback. Repos without `docs/` skip all of it. Search is the `find-knowledge` skill (docs index → decisions → `rg` → repowise when available → issues, PRs, Discussions).
 
