@@ -359,8 +359,55 @@ jobs:
           fi
           exit "$rc"
 
+  # Claude Code + Slack mode: a push to a research or RFC PR that waits for approval takes the approval back
+  # (status:review) until the gate has judged the new head, so an `approve` can never merge a head no review ran on.
+  # The gate waits for this job; it re-posts the recommendation and sets needs-approval again
+  hold-approval:
+    if: >-
+      vars.AGENTKIT_INTERFACE == 'claude-slack' && github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
+      github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'agent/')
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-issues: write
+          permission-actions: read  # Load agentkit reads this run's referenced workflows
+
+      - name: Load agentkit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: review.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+
+      - name: Take back the approval request
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
+          [ -n "$n" ] || exit 0
+          labels=$(gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name')
+          grep -qx status:needs-approval <<<"$labels" || exit 0
+          echo "#$n: new push, back to review until the gate judges it"
+          .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:review
+
   gate:
-    needs: [review, integration, suite, docs]
+    needs: [review, integration, suite, docs, hold-approval]
     if: >-
       always() && (github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'agent/')))
@@ -370,6 +417,8 @@ jobs:
     concurrency:
       group: agentkit-gate-${{ github.repository }}-${{ github.event.pull_request.head.sha || github.event.check_run.head_sha || github.event.sha || 'sweep' }}
       cancel-in-progress: false
+    env:
+      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
     steps:
       - id: app
         uses: actions/create-github-app-token@v3
@@ -407,19 +456,70 @@ jobs:
           AUTO_MERGE: ${{ vars.AUTO_MERGE }}
           MAX_ROUNDS: ${{ inputs.max-rounds }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          AGENTKIT_BOT: ${{ steps.app.outputs.app-slug }}[bot]
         run: |
           # a newer push cancelled this run's reviews: that run's gate decides
           if jq -e 'any(.[]; .result == "cancelled")' <<<"$NEEDS" >/dev/null; then exit 0; fi
           C=.agentkit-kit/scripts/checks.py
+          # prints whether a person decided the RFC of PR $1 (issue $2): a /decide on the PR, or a Slack accept|reject
+          # on the issue after the kit's latest recommendation, by someone with write access (people.sh). The kit
+          # relays a Slack reply as a /decide, but an agent with a comment token posts as the kit too, so the kit's own
+          # /decide never counts by itself. A failed read returns non-zero, which fails the step instead of looking undecided
+          decided() {
+            local on_pr on_issue recs after
+            on_pr=$(.agentkit-kit/scripts/people.sh "$REPO" "$1" "$AGENTKIT_BOT") || return 1
+            on_issue=$(.agentkit-kit/scripts/people.sh "$REPO" "$2" "$AGENTKIT_BOT") || return 1
+            recs=$(gh api --paginate "repos/$REPO/issues/$2/comments" \
+              --jq '.[] | select(.user.login == env.AGENTKIT_BOT and (.body | startswith("<!-- agentkit:recommendation -->"))) | .id') || return 1
+            after=$(tail -n 1 <<<"$recs")
+            jq -n --argjson pr "$on_pr" --argjson issue "$on_issue" --argjson after "${after:-null}" \
+              '{pr: [$pr[].body], issue: $issue, after: $after}' | python3 "$C" decided
+          }
+          # Claude Code + Slack mode: a passing research or RFC PR waits for the person's approval on issue $n,
+          # with the doc's recommendation in a comment that starts with the marker apply-reply.sh reads
+          ask_approval() {
+            local kind=$1 dir=research doc text rec='' src body unverified reply
+            [ "$kind" = research ] || dir=rfcs
+            doc=$(grep -E "^docs/$dir/[A-Za-z0-9._-]+\.md$" <<<"$files" | grep -v '/README\.md$' | head -n1 || true)
+            # a doc that cannot be read (removed in the PR) gets the fallback line
+            if [ -n "$doc" ] && text=$(gh api -H "Accept: application/vnd.github.raw+json" "repos/$REPO/contents/$doc?ref=$sha"); then
+              rec=$(python3 .agentkit-kit/scripts/recommendation.py "$kind" <<<"$text")
+            fi
+            [ -n "$rec" ] || rec="> No recommendation found in the doc."
+            # Slack does not link `#n`, so the PR's URL too
+            src="PR #$pr ($GITHUB_SERVER_URL/$REPO/pull/$pr)"
+            [ -z "$doc" ] || src="\`$doc\` in $src"
+            # unticked Human verification items (the rule of checklist.sh), shown before the person approves
+            body=$(gh pr view "$pr" --repo "$REPO" --json body --jq .body)
+            unverified=$(printf '%s\n' "$body" \
+              | awk '/^#+ /{hv = (tolower($0) ~ /^#+ human verification/); next} hv && /^[[:space:]]*- \[ \]/' \
+              | sed -e 's/^[[:space:]]*//' -e 's/<!--/\&lt;!--/g')
+            [ -z "$unverified" ] || unverified="**Not verified yet:**
+          $unverified
+
+          "
+            reply="Reply \`approve\`, or answer in your own words."
+            [ "$kind" = research ] || reply="Reply \`accept <why>\` or \`reject <why>\`."
+            # the status first: Slack threads a comment under the issue's card only once action:required is there
+            set_status status:needs-approval
+            printf '%s\n' "<!-- agentkit:recommendation -->
+          $rec
+
+          From $src.
+
+          $unverified$reply
+
+          Answer with the Comment button on this issue's card in Slack." | gh issue comment "$n" --repo "$REPO" --body-file -
+          }
           judge() {
-            local pr=$1 head sha mergeable n files required doc out verdict unmet human failed
+            local pr=$1 head sha mergeable n labels kind files required doc out verdict unmet human failed
             read -r head sha mergeable < <(gh pr view "$pr" --repo "$REPO" --json headRefName,headRefOid,mergeable --jq '"\(.headRefName) \(.headRefOid) \(.mergeable)"')
             n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$head")
             [ -n "$n" ] || return 0
             # a PR that conflicts with its base gets no pull_request runs: send it back to the implementer,
             # which merges the base first. Not a failed round; a person's needs-human stays theirs
             if [ "$mergeable" = CONFLICTING ]; then
-              gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qxE 'status:(review|approved|needs-verification)' || return 0
+              gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qxE 'status:(review|approved|needs-verification|needs-approval)' || return 0
               gh pr comment "$pr" --repo "$REPO" --body "agentkit: this PR conflicts with its base branch. Sending back to the implementer to merge the base and resolve the conflicts."
               .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:changes-requested
               return 0
@@ -428,9 +528,23 @@ jobs:
             # a push (a person's, too) re-gates an approved PR
             if [ "$EVENT" = pull_request ] && [ "$sha" != "$EVENT_SHA" ]; then return 0; fi
             local ok=status:review
-            [ "$EVENT" != pull_request ] || ok='status:(review|approved|needs-verification)'
-            gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qxE "$ok" || return 0
+            [ "$EVENT" != pull_request ] || ok='status:(review|approved|needs-verification|needs-approval)'
+            labels=$(gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name')
+            grep -qxE "$ok" <<<"$labels" || return 0
+            # the doc kind of a research or RFC issue, which waits for approval in the Slack mode
+            kind=
+            if [ "$AGENTKIT_INTERFACE" = claude-slack ]; then
+              if grep -qx type:rfc <<<"$labels"; then kind=rfc; elif grep -qx type:research <<<"$labels"; then kind=research; fi
+            fi
             set_status() { .agentkit-kit/scripts/set-status.sh "$REPO" "$n" "$@"; }
+            # Claude Code + Slack mode: Slack shows the issue's card, not the PR, so a handover that waits on a person
+            # also says on the issue what is needed, with the PR's link
+            ping_issue() {
+              [ "$AGENTKIT_INTERFACE" = claude-slack ] || return 0
+              printf '%s\n' "agentkit: $1 PR: $GITHUB_SERVER_URL/$REPO/pull/$pr
+
+          Answer with the Comment button on this issue's card in Slack." | gh issue comment "$n" --repo "$REPO" --body-file - >/dev/null
+            }
             files=$(gh api --paginate "repos/$REPO/pulls/$pr/files" --jq '.[].filename')
             # the kit's own checks must report too, so a commit no review ran on never passes
             required=$( { python3 "$C" select "$EXTERNAL" <<<"$files"; python3 "$C" select "$SUITES" <<<"$files"; } \
@@ -462,19 +576,42 @@ jobs:
               timeout)
                 gh pr comment "$pr" --repo "$REPO" --body "agentkit: still no result from $(jq -r '.pending | join(", ")' <<<"$out") after $TIMEOUT minutes ($RUN). Check that these run for this branch, then re-run them or move the issue back to \`status:review\`."
                 set_status status:needs-human reason:env
+                ping_issue "checks $(jq -r '.pending | join(", ") | gsub("<!--"; "&lt;!--")' <<<"$out") gave no result after $TIMEOUT minutes. A person must check that they run for this branch and re-run them. Reply \`retry\` to send it back to the implementer."
                 return 0 ;;
               pass)
+                # an RFC a person decided passes normally: the decision is recorded, so it merges
+                if [ -n "$kind" ]; then
+                  local dec=false
+                  if [ "$kind" = rfc ]; then dec=$(decided "$pr" "$n"); fi
+                  if [ "$dec" != true ]; then ask_approval "$kind"; return 0; fi
+                fi
                 if [ "$human" -gt 0 ]; then
                   set_status status:needs-verification
                   gh pr comment "$pr" --repo "$REPO" --body "agentkit: all checks passed. $human item(s) under **Human verification** need a person: check them (on a device, a staging build or wherever the item says) and tick the boxes in the PR description; ticking the last one approves the PR."
+                  ping_issue "all checks passed; $human item(s) under **Human verification** in the PR need a person to check them. Reply \`verified\` when they pass, or say what failed."
                   return 0
                 fi
                 set_status status:approved
-                if [ "$AUTO_MERGE" = true ]; then gh pr merge "$pr" --repo "$REPO" --squash --delete-branch; fi
+                # a merge that fails (a protected branch, a conflict that came up since) hands over: approved is never
+                # a waiting state
+                if [ "$AUTO_MERGE" = true ] && ! gh pr merge "$pr" --repo "$REPO" --squash --delete-branch; then
+                  set_status status:needs-human reason:agent-error
+                  gh pr comment "$pr" --repo "$REPO" --body "agentkit: all checks passed, but the auto-merge failed ($RUN). Needs a human: merge it, or say what is in the way."
+                  ping_issue "all checks passed, but the auto-merge failed ($RUN). Merge the PR by hand once the cause is fixed, or reply \`block <reason>\`."
+                fi
                 return 0 ;;
             esac
-            local rounds
-            rounds=$(gh api --paginate "repos/$REPO/issues/$pr/comments" --jq '[.[]|select(.body|contains("<!-- agentkit:round"))]|length' | awk '{s+=$1} END {print s+0}')
+            # failed rounds so far: the kit's round comments since its latest reset-rounds (a Slack retry or guidance).
+            # A reset counts once, and only for a write-access person's comment on the issue that it names, so an
+            # agent posting as the kit cannot reset the rounds; those comments are read only when there is a reset
+            local comments rounds people='[]' pp
+            comments=$(gh api --paginate "repos/$REPO/issues/$pr/comments" --jq '.[] | {user: .user.login, body}')
+            if jq -se --arg bot "$AGENTKIT_BOT" 'any(.[]; .user == $bot and (.body | startswith("<!-- agentkit:reset-rounds ")))' \
+                 <<<"$comments" >/dev/null; then
+              pp=$(.agentkit-kit/scripts/people.sh "$REPO" "$n" "$AGENTKIT_BOT")
+              people=$(jq -c '[.[].id]' <<<"$pp")
+            fi
+            rounds=$(jq -s --argjson people "$people" '{comments: ., people: $people}' <<<"$comments" | python3 "$C" rounds "$AGENTKIT_BOT")
             rounds=$((rounds + 1))
             if [ "$rounds" -ge "$MAX_ROUNDS" ]; then
               gh pr comment "$pr" --repo "$REPO" --body "<!-- agentkit:round $sha -->
@@ -482,6 +619,7 @@ jobs:
 
           $failed"
               set_status status:needs-human reason:agent-error
+              ping_issue "review round $rounds of $MAX_ROUNDS failed and the fix loop stopped; it needs a person. Reply \`retry\` for more rounds, or answer with guidance for the implementer."
             else
               gh pr comment "$pr" --repo "$REPO" --body "<!-- agentkit:round $sha -->
           agentkit: review round $rounds of $MAX_ROUNDS failed ($RUN). Sending back to the implementer.

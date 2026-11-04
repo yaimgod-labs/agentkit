@@ -15,6 +15,7 @@ on:
           status:needs-info|Needs your answer
           status:needs-human|Handed over to you
           status:needs-verification|Needs your verification
+          status:needs-approval|Needs your approval
           status:approved|Approved, waiting for your merge
           status:blocked|Blocked
     secrets:
@@ -43,10 +44,13 @@ jobs:
           REPO: ${{ github.repository }}
           SLACK: ${{ secrets.SLACK_WEBHOOK_URL }}
           STATUSES: ${{ inputs.statuses }}
+          AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
         run: |
           text=""
           while IFS='|' read -r label heading; do
             [ -n "$label" ] || continue
+            # in the Slack mode a merge is the auto-merge's job, so "approved" is not a wait
+            if [ "$label" = status:approved ] && [ "$AGENTKIT_INTERFACE" = claude-slack ]; then continue; fi
             items=$(gh issue list --repo "$REPO" --state open --label "$label" --limit 50 --json number,title,url,updatedAt,labels \
               --jq 'sort_by(.updatedAt)[] | "• <\(.url)|#\(.number)> \(.title | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;")) — last update \(.updatedAt[:10])\([.labels[].name | select(startswith("reason:"))] | if length > 0 then " (\(join(", ")))" else "" end)"')
             if [ -n "$items" ]; then text+="*${heading:-$label}*"$'\n'"$items"$'\n\n'; fi

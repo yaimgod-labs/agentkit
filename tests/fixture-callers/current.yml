@@ -3,7 +3,7 @@ name: agentkit
 
 on:
   issues:
-    types: [labeled, closed]
+    types: [opened, labeled, closed]
   issue_comment:
     types: [created]
   pull_request:
@@ -41,11 +41,20 @@ jobs:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
+  triage:
+    if: github.event_name == 'issues' && github.event.action == 'opened' && vars.AGENTKIT_INTERFACE == 'claude-slack'
+    uses: example-org/agentkit/.github/workflows/triage.yml@main
+    with:
+      agentkit-ref: main
+    secrets:
+      AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
+
   refine:
     if: >-
       (github.event_name == 'issues' && github.event.label.name == 'status:refining') ||
       (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
-       github.event.comment.user.type != 'Bot' && contains(github.event.issue.labels.*.name, 'status:needs-info'))
+       github.event.comment.user.type != 'Bot' && contains(github.event.issue.labels.*.name, 'status:needs-info') &&
+       vars.AGENTKIT_INTERFACE != 'claude-slack')
     uses: example-org/agentkit/.github/workflows/refine.yml@main
     with:
       agentkit-ref: main
@@ -74,6 +83,19 @@ jobs:
     secrets:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  reply:
+    if: >-
+      github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
+      github.event.comment.user.type != 'Bot' && !startsWith(github.event.comment.body, '/') &&
+      vars.AGENTKIT_INTERFACE == 'claude-slack' &&
+      (contains(github.event.issue.labels.*.name, 'action:required') ||
+       contains(github.event.issue.labels.*.name, 'status:blocked'))
+    uses: example-org/agentkit/.github/workflows/reply.yml@main
+    with:
+      agentkit-ref: main
+    secrets:
+      AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
 
   review:
     # PR pushes run the full review; other CI apps' results and the schedule re-run only its gate
@@ -105,3 +127,4 @@ jobs:
     secrets:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

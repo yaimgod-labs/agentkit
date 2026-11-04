@@ -1,0 +1,84 @@
+# Triage (Claude Code + Slack mode, repo var AGENTKIT_INTERFACE=claude-slack): a new issue by a trusted author (the
+# kit's bot counts) with no status, or only status:backlog, moves to status:refining, so refine picks it up on its own.
+# An issue /task filed (its body's last line is `<!-- agentkit:filed-by-task -->`) is refined already and skipped.
+# Its own workflow with one concurrency group per issue, so a busy dispatcher can never drop it.
+name: agentkit-triage
+
+on:
+  workflow_call:
+    inputs:
+      agentkit-ref:
+        description: Override the kit commit, branch or tag to load scripts and the plugin from (default — the commit the caller's `uses:` resolved to)
+        type: string
+        default: ""
+    secrets:
+      AGENTKIT_APP_KEY:
+        required: true
+
+permissions: {}
+
+jobs:
+  triage:
+    if: github.event_name == 'issues' && github.event.action == 'opened' && vars.AGENTKIT_INTERFACE == 'claude-slack'
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    # one run per issue (only its `opened` event lands here), so a pending run is never replaced
+    concurrency:
+      group: agentkit-triage-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    env:
+      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-issues: write  # the status label
+          permission-actions: read  # Load agentkit reads this run's referenced workflows
+
+      # the kit's scripts and actions, from the repo and commit this workflow itself was loaded from
+      # (the caller's `uses:`), so no owner or ref is written down anywhere in the kit
+      - name: Load agentkit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: triage.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          # ponytail: anonymous fetch, so the kit repo must be public; add token auth for a private fork
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+
+      - id: author
+        continue-on-error: true  # an untrusted author is ignored, not an error
+        uses: ./.agentkit-kit/.github/actions/trusted
+        with:
+          logins: ${{ github.event.issue.user.login }}
+          token: ${{ steps.app.outputs.token }}
+          bot: ${{ steps.app.outputs.app-slug }}[bot]
+          require-all: "true"
+
+      - name: Refine new issues
+        if: steps.author.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          N: ${{ github.event.issue.number }}
+        run: |
+          # the labels live, not from the event: a status set since (by /task, plan-feature or a person) wins
+          issue=$(gh api "repos/$REPO/issues/$N")
+          if jq -e '.pull_request or .state != "open"' <<<"$issue" >/dev/null; then echo "#$N is not an open issue"; exit 0; fi
+          # /task files its issues refined already, ends their body with the marker and sets their status last
+          if jq -e '[(.body // "") | split("\n")[] | select(test("\\S"))] | last // "" | gsub("^\\s+|\\s+$"; "")
+                    == "<!-- agentkit:filed-by-task -->"' <<<"$issue" >/dev/null; then
+            echo "#$N was filed by /task"; exit 0
+          fi
+          statuses=$(jq -r '[.labels[].name | select(startswith("status:"))] | join(" ")' <<<"$issue")
+          case "$statuses" in
+            "" | status:backlog) .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:refining ;;
+            *) echo "#$N is at '$statuses'; not refined" ;;
+          esac

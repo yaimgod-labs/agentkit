@@ -2,6 +2,8 @@
 # status:needs-info issue. Claude (read-only) triages and plans the issue; this
 # workflow posts the plan and questions, sets size/type/mode labels, and moves the
 # issue to status:ready (small and clear) or status:needs-info (assigned to you).
+# In the Claude Code + Slack mode a large task (size m or l, not research or an RFC) proposes its split for
+# approval (status:needs-approval), or with repo var AUTO_SPLIT=true comments /plan to split at once.
 name: agentkit-refine
 
 on:
@@ -77,6 +79,7 @@ jobs:
       REPO: ${{ github.repository }}
       N: ${{ github.event.issue.number }}
       SENDER: ${{ github.event.sender.login }}
+      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
     steps:
       - id: write
         uses: actions/create-github-app-token@v3
@@ -135,6 +138,8 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.read.outputs.token }}
+          # the kit's bot starts this run in Slack mode (triage, replies, a relayed /plan); the trust step vets the people
+          allowed_bots: ${{ steps.write.outputs.app-slug }}
           plugin_marketplaces: |
             ${{ github.workspace }}/.agentkit-kit
             ${{ steps.kit.outputs.project-marketplace }}
@@ -163,6 +168,7 @@ jobs:
           GH_TOKEN: ${{ steps.write.outputs.token }}
           EXEC: ${{ steps.claude.outputs.execution_file }}
           BOT: ${{ steps.write.outputs.app-slug }}[bot]
+          AUTO_SPLIT: ${{ vars.AUTO_SPLIT }}
         run: |
           result=$(jq -r '[.[] | select(.type=="result")] | last | .result // ""' "$EXEC")
           verdict=$(sed -n 's/^VERDICT: //p' <<<"$result" | tail -1)
@@ -173,7 +179,57 @@ jobs:
             echo "::error::no valid VERDICT line in the refiner's answer: ${verdict:-none}"
             exit 1
           fi
-          gh issue comment "$N" --repo "$REPO" --body "$(grep -v '^VERDICT: ' <<<"$result")"
+          status=$(jq -r .status <<<"$verdict")
+          # Claude Code + Slack mode: the verdict's optional research key (1-3 questions; ask.py validates it and warns
+          # on a bad one) files each question as a research issue, and the issue waits on them (status:blocked)
+          # instead of taking the verdict's status. Outside the mode the key is ignored.
+          research='' asks=''
+          if [ "$AGENTKIT_INTERFACE" = claude-slack ]; then research=$(python3 .agentkit-kit/scripts/ask.py research <<<"$verdict"); fi
+          # research stays one level deep: on an issue that is research already (by its labels, body marker or this
+          # verdict), the questions go to a person as stuck messages and the issue waits for the answer (needs-info)
+          if [ -n "$research" ]; then
+            issue=$(gh issue view "$N" --repo "$REPO" --json labels,body)
+            if [ "$(python3 .agentkit-kit/scripts/ask.py nested <<<"$issue")" != false ] || jq -e '.type == "research"' <<<"$verdict" >/dev/null; then
+              asks=$research research='' status=needs-info
+            fi
+          fi
+          body=$(grep -v '^VERDICT: ' <<<"$result" || true)
+          # in the mode a large plain task (size m or l, not research or an RFC: split.py eligible) is split: at once
+          # with AUTO_SPLIT=true (a /plan comment), otherwise once the person approves the split the verdict proposes
+          # (status:needs-approval). Research and questions for a person come first. A missing or invalid split list
+          # (split.py warns) leaves today's needs-info.
+          split='' proposal=''
+          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] && [ -z "$asks" ] \
+             && [ "$(python3 .agentkit-kit/scripts/split.py eligible <<<"$verdict")" = true ]; then
+            if [ "$AUTO_SPLIT" = true ]; then
+              split=auto
+            else
+              qflag=()
+              if grep -q '^## Questions' <<<"$body"; then qflag=(--questions); fi
+              proposal=$(python3 .agentkit-kit/scripts/split.py proposal "${qflag[@]}" <<<"$verdict")
+              if [ -n "$proposal" ]; then split=propose; fi
+            fi
+          fi
+          [ "$split" != propose ] || status=needs-approval
+          # in the mode a comment that leaves the issue waiting on a person (action:required) ends with the reply line
+          # of its status and how to answer (a split proposal and each ask are their own comments, with their own
+          # closing lines)
+          human=false
+          if jq -e '.status == "ready" and .mode == "human"' <<<"$verdict" >/dev/null; then human=true; fi
+          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] && [ -z "$split" ] && [ -z "$asks" ]; then
+            reply=
+            if [ "$status" = needs-info ]; then reply="Reply with an answer, \`research <what to find out>\`, or \`block <reason>\`."
+            elif [ "$human" = true ]; then reply="Reply \`done\` once you have finished it, or \`block <reason>\`."; fi
+            [ -z "$reply" ] || body+=$'\n\n'"$reply"$'\n'"Answer with the Comment button on this issue's card in Slack."
+          fi
+          # a status that waits on a person (in the mode) is set before its comments, as Slack threads a comment under
+          # the issue's card only once action:required is there. Any other status keeps the plan first, so an issue
+          # never reaches ready (and the implementer) ahead of its plan
+          waiting=
+          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] && [ "$split" != auto ]; then
+            case "$status" in needs-info | needs-approval) waiting=1 ;; ready) [ "$human" = false ] || waiting=1 ;; esac
+          fi
+          if [ -z "$waiting" ]; then printf '%s\n' "$body" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null; fi
           new=$(jq -r '"size:\(.size) type:\(.type) mode:\(.mode)"' <<<"$verdict")
           args=()
           while IFS= read -r l; do
@@ -200,8 +256,31 @@ jobs:
             fi
           done < <(jq -r --argjson n "$N" '(.blocked_by // []) | unique | .[] | select(. != $n)' <<<"$verdict")
           if [ -n "$failed" ]; then gh issue comment "$N" --repo "$REPO" --body "$failed" >/dev/null || true; fi
-          status=$(jq -r .status <<<"$verdict")
+          if [ -n "$research" ]; then
+            # the kit asks, so the bot is the asker; apply-reply.sh links each issue as a blocker and sets status:blocked
+            while IFS= read -r q; do
+              AGENTKIT_BOT=$BOT .agentkit-kit/scripts/apply-reply.sh "$REPO" "$N" research "$q" "$BOT" </dev/null
+            done <<<"$research"
+            exit 0
+          fi
+          # the bot's /plan runs the planner, which turns this issue into an epic (plan.yml clears its status)
+          if [ "$split" = auto ]; then
+            gh issue comment "$N" --repo "$REPO" --body "/plan" >/dev/null
+            exit 0
+          fi
           .agentkit-kit/scripts/set-status.sh "$REPO" "$N" "status:$status"
+          if [ -n "$waiting" ]; then
+            printf '%s\n' "$body" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
+            if [ -n "$asks" ]; then
+              while IFS= read -r q; do
+                msg=$(jq -nc --arg q "$q" '{kind: "question", text: $q,
+                  why: "This issue is research already, so the kit asks a person instead of filing more research.",
+                  checked: "The plan above."}' | python3 .agentkit-kit/scripts/ask.py message)
+                printf '%s\n' "$msg" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
+              done <<<"$asks"
+            fi
+            if [ "$split" = propose ]; then printf '%s\n' "$proposal" | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null; fi
+          fi
           if [ "$status" = needs-info ] && [ "$SENDER" != "$BOT" ]; then
             gh issue edit "$N" --repo "$REPO" --add-assignee "$SENDER" >/dev/null || true  # assignee must be a collaborator
           fi
@@ -212,6 +291,20 @@ jobs:
           GH_TOKEN: ${{ steps.write.outputs.token }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh issue comment "$N" --repo "$REPO" --body "agentkit: refine run failed or timed out ($RUN). Needs a human."
-          .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error \
-            || gh issue edit "$N" --repo "$REPO" --add-label status:needs-human --add-label reason:agent-error
+          # the status first, then the comment: Slack threads a comment under the issue's card only once
+          # action:required is there. In the Claude Code + Slack mode the comment ends with the Comment-button line
+          if ! .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error; then
+            # the kit may not have loaded if the run failed early: by hand. In the mode also one status, one reason
+            # and action:required, so the card and the reply job see the handover
+            args=()
+            if [ "$AGENTKIT_INTERFACE" = claude-slack ]; then
+              for l in $(gh issue view "$N" --repo "$REPO" --json labels --jq '.labels[].name | select((startswith("status:") and . != "status:needs-human") or (startswith("reason:") and . != "reason:agent-error"))'); do
+                args+=(--remove-label "$l")
+              done
+              args+=(--add-label action:required)
+            fi
+            gh issue edit "$N" --repo "$REPO" ${args[@]+"${args[@]}"} --add-label status:needs-human --add-label reason:agent-error
+          fi
+          msg="agentkit: refine run failed or timed out ($RUN). Needs a human."
+          [ "$AGENTKIT_INTERFACE" != claude-slack ] || msg+=$'\n\n'"Answer with the Comment button on this issue's card in Slack."
+          printf '%s\n' "$msg" | gh issue comment "$N" --repo "$REPO" --body-file -

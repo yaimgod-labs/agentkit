@@ -20,8 +20,9 @@ Logic goes into small scripts under `scripts/` (CI) or `plugins/agentkit/scripts
 - Mode switch: repo variable `AGENTKIT_INTERFACE=claude-slack`. When it's unset, every behavior from Part C is off and v1 behaves as today.
 - `AUTO_SPLIT=true` creates sub-tasks without asking. Unset means ask.
 - In the mode, `AUTO_MERGE=true` is required.
-- Waiting label: `waiting:you`. Statuses that carry it: `needs-info`, `needs-human`, `needs-verification`, `needs-approval`, plus `ready` when the task has `mode:human`.
+- Waiting label: `action:required`. Statuses that carry it: `needs-info`, `needs-human`, `needs-verification`, `needs-approval`, plus `ready` when the task has `mode:human`.
 - New status `status:needs-approval` (board Stage "Needs approval"). Covers research recommendations, RFC decisions and split proposals.
+- Replies reach GitHub only through the Slack card's **Comment** button (a plain thread reply stays in Slack; spec, Spike result). Every comment that sets `action:required` ends with the line `Answer with the Comment button on this issue's card in Slack.`
 - Reply keywords are plain words at the start of a reply, never a leading `/`:
   - `approve`
   - `research <q>`
@@ -193,7 +194,7 @@ Logic goes into small scripts under `scripts/` (CI) or `plugins/agentkit/scripts
   - **no argument:** gather open issues, deps (`blocked_by` and `blocking` per open issue), closed issues of the last 60 days with their first `status:in-progress` event, and Rank. Run `estimate` and `render`. Print the result as is.
   - **`<n>`:** `gh issue view <n> --json title,body,labels,comments` plus the linked PR's body. Summarize it under headings.
   - **`move <n> <pos>`:** recompute ranks 1..k so that `<n>` sits at `<pos>`, and write them with `gh project item-edit --number`.
-  - **`unblock <n>`:** `gh issue edit <n> --remove-label status:blocked --remove-label waiting:you --add-label status:refining`.
+  - **`unblock <n>`:** `gh issue edit <n> --remove-label status:blocked --remove-label action:required --add-label status:refining`.
   - **`done <n>`:** only for `mode:human`: `gh issue close <n> --reason completed`.
 - [ ] **Step 2: CLI.** Add the `Rank` field next to `Stage` in `setup_board` (`gh project field-create … --name Rank --data-type NUMBER`, guarded by a field-list check).
 - [ ] **Step 3: Verify.** Run `tests/run.sh`. Then, locally in a project with the kit, run `/board` and `/board move <n> 1`, then `/board` again. Expected: `<n>` is first under Up next.
@@ -220,12 +221,12 @@ Logic goes into small scripts under `scripts/` (CI) or `plugins/agentkit/scripts
 
 # Part C: Slack mode (opt-in)
 
-### Task C0: Spike — does the GitHub Slack app thread what we need? (manual, with the user)
+### Task C0: Spike — does the GitHub Slack app thread what we need? (manual, with the user) — DONE 2026-11-03: yes, with replies through the card's Comment button (see the spec's Spike result)
 
 No code. Use the scratch repo and a test Slack channel.
 
-- [ ] **Step 1:** `/github subscribe <scratch> issues comments +label:"waiting:you"` (unsubscribe everything else).
-- [ ] **Step 2:** Create a `waiting:you` label. Add it to an open issue from the App token (`gh issue edit`). Then post a comment as the App.
+- [ ] **Step 1:** `/github subscribe <scratch> issues comments +label:"action:required"` (unsubscribe everything else).
+- [ ] **Step 2:** Create a `action:required` label. Add it to an open issue from the App token (`gh issue edit`). Then post a comment as the App.
 - [ ] **Step 3: Record answers** to these in `docs/superpowers/specs/2026-11-02-claude-code-and-slack-interface-design.md` under a new `## Spike result` section:
   - Does adding the label post a message?
   - Does the App's comment appear in that message's thread?
@@ -233,28 +234,28 @@ No code. Use the scratch repo and a test Slack channel.
   - Does a reply starting with a plain word post normally?
 - [ ] **Step 4: Decide.** If all four are yes, continue with C1. If any is no, stop and bring it to the user: the fallback is our own Slack app plus a hosted endpoint, which is a new decision.
 
-### Task C1: `waiting:you` and `needs-approval`
+### Task C1: `action:required` and `needs-approval`
 
 **Files:**
 - Modify: `scripts/set-status.sh`
 - Modify: `tests/test_set_status.sh`
-- Modify: `cli/gh-agentkit/gh-agentkit` (`LABELS`: add `status:needs-approval|0e8a16|Agent proposal waiting for your approve`, `waiting:you|d93f0b|Waiting on you (Slack pings these)`. `STAGES`: add `Needs approval` after `Needs verification`.)
+- Modify: `cli/gh-agentkit/gh-agentkit` (`LABELS`: add `status:needs-approval|0e8a16|Agent proposal waiting for your approve`, `action:required|d93f0b|Waiting on you (Slack pings these)`. `STAGES`: add `Needs approval` after `Needs verification`.)
 - Modify: `.github/workflows/dispatch.yml` (Stage map: `status:needs-approval) echo "Needs approval"`)
 - Modify: `.github/workflows/digest.yml` (default `statuses` adds `status:needs-approval|Needs your approval`. Drop the `approved` line only when the mode is on: pass `vars.AGENTKIT_INTERFACE` in, and skip `status:approved` if it equals `claude-slack`.)
 
 **Interfaces:**
-- Produces: when env `AGENTKIT_INTERFACE=claude-slack`, set-status's single edit also adds `waiting:you` for a waiting status (see Global Constraints) and removes it otherwise. The env var unset means no change from today. Every workflow that calls set-status gets `AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}` in its job `env`.
+- Produces: when env `AGENTKIT_INTERFACE=claude-slack`, set-status's single edit also adds `action:required` for a waiting status (see Global Constraints) and removes it otherwise. The env var unset means no change from today. Every workflow that calls set-status gets `AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}` in its job `env`.
 
 - [ ] **Step 1: Extend `tests/test_set_status.sh`.** `check` gets an optional 5th argument for `AGENTKIT_INTERFACE`. Cases:
-  - `"status:review" status:needs-info` in the mode → `… --remove-label status:review --add-label status:needs-info --add-label waiting:you`.
-  - `"status:needs-info waiting:you" status:refining` in the mode → `… --remove-label status:needs-info --remove-label waiting:you --add-label status:refining`.
-  - `"mode:human status:refining" status:ready` in the mode → adds `waiting:you`.
+  - `"status:review" status:needs-info` in the mode → `… --remove-label status:review --add-label status:needs-info --add-label action:required`.
+  - `"status:needs-info action:required" status:refining` in the mode → `… --remove-label status:needs-info --remove-label action:required --add-label status:refining`.
+  - `"mode:human status:refining" status:ready` in the mode → adds `action:required`.
   - The same first case without the mode gives the old output exactly.
 - [ ] **Step 2: Run it.** Expected: the new cases FAIL.
-- [ ] **Step 3: Implement.** The label query also selects `waiting:you` and `mode:human`. Compute `want_wait` from the target status. `mode:human` only feeds `want_wait` and is never removed.
+- [ ] **Step 3: Implement.** The label query also selects `action:required` and `mode:human`. Compute `want_wait` from the target status. `mode:human` only feeds `want_wait` and is never removed.
 - [ ] **Step 4: Add `AGENTKIT_INTERFACE` to the job env** of dispatch, refine, implement, review and plan.
 - [ ] **Step 5: Run** `tests/test_set_status.sh && ./actionlint -color && tests/run.sh`. Expected: clean.
-- [ ] **Step 6: Commit** with message `feat: waiting:you label and needs-approval status for Slack mode`.
+- [ ] **Step 6: Commit** with message `feat: action:required label and needs-approval status for Slack mode`.
 
 ### Task C2: Reply parser
 
@@ -286,7 +287,7 @@ No code. Use the scratch repo and a test Slack channel.
 - [ ] **Step 2: Run** `python3 tests/test_reply.py`. Expected: FAIL.
 - [ ] **Step 3: Implement** with stdlib only, as one dict from `(status, kind)` to the allowed keywords.
 - [ ] **Step 4: Run** `python3 tests/test_reply.py && tests/run.sh` (add the test and `py_compile` to `run.sh`). Expected: PASS.
-- [ ] **Step 5: Commit** with message `feat: reply.py maps Slack thread replies to actions`.
+- [ ] **Step 5: Commit** with message `feat: reply.py maps Slack replies to actions`.
 
 ### Task C3: Reply workflow
 
@@ -300,7 +301,7 @@ No code. Use the scratch repo and a test Slack channel.
   - the needs-approval comment holds the recommendation: the doc's answer section, or the RFC's Recommendation;
   - on a push, the gate's `ok` pattern also accepts `status:needs-approval`, so a pushed research/RFC PR is re-gated.
 - Modify: `templates/.github/workflows/agentkit.yml`:
-  - new `reply` job: `issue_comment` on an issue (not a PR), commenter not a Bot, `vars.AGENTKIT_INTERFACE == 'claude-slack'`, and the issue has `waiting:you` or `status:blocked`;
+  - new `reply` job: `issue_comment` on an issue (not a PR), commenter not a Bot, `vars.AGENTKIT_INTERFACE == 'claude-slack'`, and the issue has `action:required` or `status:blocked`;
   - the `refine` job's comment trigger gets `&& vars.AGENTKIT_INTERFACE != 'claude-slack'`, because in the mode, reply's `answer` sets `status:refining`, which triggers refine by label.
 
 **Interfaces:**
@@ -340,7 +341,7 @@ No code. Use the scratch repo and a test Slack channel.
   5. Run `reply.py` and then `apply-reply.sh`.
 - [ ] **Step 5: Add the A3 skip.** The drop step skips when the closing issue's last comment has `<!-- agentkit:superseded -->`.
 - [ ] **Step 6: Run** `tests/test_apply_reply.sh && ./actionlint -color && tests/run.sh && python3 tests/test_caller.py`. Expected: clean.
-- [ ] **Step 7: Commit** with message `feat: Slack thread replies drive the task (reply workflow)`.
+- [ ] **Step 7: Commit** with message `feat: Slack replies drive the task (reply workflow)`.
 
 ### Task C4: Agents ask through stuck messages and start research themselves
 

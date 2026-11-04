@@ -20,6 +20,7 @@ LABELS=(
   "status:blocked|b60205|Waiting on something outside the repo"
   "status:needs-human|5319e7|Automation stopped; a human must act"
   "status:needs-verification|bfd4f2|Checks green; a person must verify the Human verification items"
+  "status:needs-approval|0e8a16|Agent proposal waiting for your approve"
   "size:xs|ededed|Under an hour, one file"
   "size:s|ededed|One PR, at most a day"
   "size:m|ededed|Several PRs; split before work"
@@ -44,11 +45,12 @@ LABELS=(
   "priority:high|b60205|Do first"
   "priority:medium|fbca04|Normal"
   "priority:low|c2e0c6|When there is room"
+  "action:required|d93f0b|Waiting on you (Slack pings these)"
 )
 # labels and Stage options a release renamed (old|new); upgrade renames them in place, so issues and cards keep them
 RENAMED_LABELS=("status:needs-device-check|status:needs-verification" "reason:device|reason:manual-check")
 RENAMED_STAGES='{"Needs device check": "Needs verification"}'
-STAGES="Backlog,Refining,Needs info,Ready,In progress,Review,Changes requested,Needs verification,Approved,Blocked,Needs human,Done"
+STAGES="Backlog,Refining,Needs info,Ready,In progress,Review,Changes requested,Needs verification,Needs approval,Approved,Blocked,Needs human,Done"
 CHECKS=("review / review (code)" "review / review (security)" "review / integration")
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -60,17 +62,40 @@ gh agentkit <command>
   app-create <org>            open the GitHub App creation page (from app/manifest.json)
   app-convert <code>          finish App creation: saves key + client id to ~/.config/agentkit
   secrets <owner/repo>        store the Claude token + App key as repo secrets, App client id as a variable
-  setup <owner/repo> [--base B] [--wip N]
+  setup <owner/repo> [--base B] [--wip N] [--interface claude-slack]
                               labels, board, variables, branch protection (idempotent)
-  upgrade <owner/repo>        after a kit release: labels, missing board stages, and one PR that syncs
+  upgrade <owner/repo> [--interface claude-slack]
+                              after a kit release: labels, missing board stages, and one PR that syncs
                               the caller workflow (keeps your with:, refs and extra jobs) and adds new kit files
-  init <owner/repo> [--base B] [--wip N]
+  init <owner/repo> [--base B] [--wip N] [--interface claude-slack]
                               setup + one PR adding the kit files (never overwrites existing files)
+
+  --interface claude-slack    turn on the Claude Code + Slack mode: sets AGENTKIT_INTERFACE and AUTO_MERGE=true,
+                              prints the Slack subscription lines
   doctor <owner/repo>         verify everything; non-zero exit on failure
 EOF
 }
 
 owner_of() { echo "${1%%/*}"; }
+# the --interface value; only claude-slack exists
+parse_interface() { [ "$1" = claude-slack ] || die "unknown interface '$1' (only claude-slack)"; }
+
+# Claude Code + Slack mode on: the repo variables, then the lines to run in the Slack channel
+enable_interface() {
+  local repo=$1
+  say "interface: claude-slack"
+  gh variable set AGENTKIT_INTERFACE --repo "$repo" --body claude-slack
+  gh variable set AUTO_MERGE --repo "$repo" --body true  # the mode needs it: approved is never a waiting state
+  cat <<EOT
+• in the Slack channel, run:
+    /github signin
+    /github subscribe $repo issues comments +label:"action:required"
+    /github unsubscribe $repo pulls commits releases deployments
+• answer in Slack with the Comment button on the issue's card (a plain thread reply stays in Slack)
+• for the done message and digest: gh secret set SLACK_WEBHOOK_URL --repo $repo
+EOT
+}
+
 var_get() { gh variable get "$2" --repo "$1" 2>/dev/null || true; }
 
 # ---- GitHub App -----------------------------------------------------------
@@ -132,8 +157,8 @@ cmd_secrets() {
 
 cmd_setup() {
   local repo=${1:?owner/repo}; shift
-  local base="" wip=""
-  while [ $# -gt 0 ]; do case $1 in --base) base=$2; shift 2;; --wip) wip=$2; shift 2;; *) die "unknown flag $1";; esac; done
+  local base="" wip="" iface=""
+  while [ $# -gt 0 ]; do case $1 in --base) base=$2; shift 2;; --wip) wip=$2; shift 2;; --interface) parse_interface "${2:-}"; iface=$2; shift 2;; *) die "unknown flag $1";; esac; done
   [ -n "$base" ] || base=$(gh repo view "$repo" --json defaultBranchRef --jq .defaultBranchRef.name)
 
   setup_labels "$repo"
@@ -146,6 +171,7 @@ cmd_setup() {
   fi
 
   setup_board "$repo"
+  if [ -n "$iface" ]; then enable_interface "$repo"; fi
 
   say "branch protection on $base"
   local body; body=$(jq -n --argjson checks "$(printf '%s\n' "${CHECKS[@]}" | jq -R . | jq -s .)" '{
@@ -246,7 +272,7 @@ cmd_init() {
   cmd_setup "$@"
   shift
   local base=""
-  while [ $# -gt 0 ]; do case $1 in --base) base=$2; shift 2;; *) shift 2;; esac; done
+  while [ $# -gt 0 ]; do case $1 in --base) base=$2; shift 2;; *) shift 2;; esac; done  # --wip and --interface were handled by setup
   [ -n "$base" ] || base=$(gh repo view "$repo" --json defaultBranchRef --jq .defaultBranchRef.name)
 
   local tmp; tmp=$(mktemp -d -t agentkit-init)
@@ -286,10 +312,13 @@ sync_checkout() {
 }
 
 cmd_upgrade() {
-  local repo=${1:?owner/repo}
+  local repo=${1:?owner/repo}; shift
+  local iface=""
+  while [ $# -gt 0 ]; do case $1 in --interface) parse_interface "${2:-}"; iface=$2; shift 2;; *) die "unknown flag $1";; esac; done
   setup_labels "$repo"
   gh repo edit "$repo" --enable-discussions >/dev/null  # the weekly retro posts there
   setup_board "$repo"
+  if [ -n "$iface" ]; then enable_interface "$repo"; fi
   local def; def=$(gh repo view "$repo" --json defaultBranchRef --jq .defaultBranchRef.name)
   local tmp; tmp=$(mktemp -d -t agentkit-upgrade)
   gh repo clone "$repo" "$tmp/repo" -- --depth 1 --branch "$def" -q
@@ -315,6 +344,24 @@ EOF
 }
 
 # ---- doctor -----------------------------------------------------------------
+
+# the Claude Code + Slack mode's requirements, only where the mode is on; ok/bad/warn come from cmd_doctor
+# args: repo, the secret names, the label names, the caller workflow's text (on the default branch)
+doctor_interface() {
+  [ "$(var_get "$1" AGENTKIT_INTERFACE)" = claude-slack ] || return 0
+  [ "$(var_get "$1" AUTO_MERGE)" = true ] \
+    && ok "AUTO_MERGE=true (the Slack mode needs it)" || bad "AUTO_MERGE is not true: the Slack mode needs it (gh variable set AUTO_MERGE --repo $1 --body true)"
+  grep -qx SLACK_WEBHOOK_URL <<<"$2" \
+    && ok "secret SLACK_WEBHOOK_URL" || warn "secret SLACK_WEBHOOK_URL missing: no done message, digest or retro line in Slack (gh secret set SLACK_WEBHOOK_URL --repo $1)"
+  grep -qx action:required <<<"$3" || warn "label action:required missing (gh agentkit upgrade $1)"
+  # upgrade sets the variable before its caller PR merges: without these jobs replies do nothing and new issues sit
+  local job
+  for job in reply triage; do
+    grep -q "/\.github/workflows/$job\.yml@" <<<"${4:-}" \
+      || warn "the caller has no $job job: merge the gh agentkit upgrade $1 PR (the Slack mode needs it)"
+  done
+  echo "        Slack mode: run /github signin in the channel once, then the subscribe lines (gh agentkit upgrade $1 --interface claude-slack prints them)"
+}
 
 cmd_doctor() {
   local repo=${1:?owner/repo}
@@ -342,6 +389,9 @@ cmd_doctor() {
   local secrets; secrets=$(gh secret list --repo "$repo" --json name --jq '.[].name' 2>/dev/null; gh secret list --org "$owner" --json name --jq '.[].name' 2>/dev/null || true)
   for s in AGENTKIT_APP_KEY CLAUDE_CODE_OAUTH_TOKEN; do grep -qx "$s" <<<"$secrets" && ok "secret $s" || bad "secret $s missing (gh agentkit secrets $repo)"; done
   for v in AGENTKIT_CLIENT_ID AGENTKIT_PROJECT; do [ -n "$(var_get "$repo" "$v")" ] && ok "variable $v" || bad "variable $v missing"; done
+
+  local caller_text; caller_text=$(gh api "repos/$repo/contents/.github/workflows/agentkit.yml?ref=$def" --jq .content 2>/dev/null | base64 -d 2>/dev/null || true)
+  doctor_interface "$repo" "$secrets" "$have" "$caller_text"
 
   local num; num=$(var_get "$repo" AGENTKIT_PROJECT)
   if [ -n "$num" ]; then

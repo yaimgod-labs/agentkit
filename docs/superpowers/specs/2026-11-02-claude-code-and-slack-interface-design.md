@@ -7,14 +7,14 @@ Date: 2026-11-02. Status: draft for approval.
 The owner never opens GitHub. GitHub stays the agents' workspace (issues, labels, PRs, Actions, board). The person works in two places:
 
 - **Claude Code**: where they look at the board, add work, read details and reorder.
-- **Slack**: where GitHub-side agents reach them, for questions, research approval, split approval, verification and "done" notes. They answer by replying in the thread.
+- **Slack**: where GitHub-side agents reach them, for questions, research approval, split approval, verification and "done" notes. They answer with the **Comment** button on the message (see Spike result).
 
 Questions follow where the person is. In an interactive Claude Code session the model asks in chat. An agent running on GitHub asks through Slack.
 
 ## Goals
 
 1. **Stuck message.** When a GitHub agent can't continue, Slack shows the task (title + link), what it is stuck on, why it can't decide alone, and what it already checked in docs/decisions/research.
-2. **Three replies in the thread** to a stuck message:
+2. **Three replies** to a stuck message, each sent with the message's Comment button:
    - **Answer**: free text. The agent continues with it.
    - **Research**: `research <what to find out>`. A research task is filed and linked as a blocker of the stuck task.
    - **Block**: `block <reason>`. The task goes to `status:blocked` with the reason recorded. The person returns to it later.
@@ -68,10 +68,10 @@ The person's rule: a task can never start while a task it depends on isn't done.
 
 ## Constraints (from the current kit)
 
-- **Replies must reach GitHub with no server.** The only no-server path from a Slack thread to GitHub is the GitHub app for Slack: a reply in a thread under an issue notification becomes an issue comment by the person's linked GitHub account. That keeps the existing trust check (write access) working. Incoming webhooks are one-way: fine for the done message and digest, useless for anything that needs a reply.
-- **Slack swallows leading `/`.** A thread reply starting with `/` is treated as a Slack slash command and isn't sent. Reply keywords are plain words at the start of the reply: `approve`, `research …`, `block …`, `verified`, `accept …`, `reject …`. On GitHub, `/plan` and `/decide` keep working as before.
-- **The app's label filter.** The GitHub Slack app keeps one label filter per subscription, and filtered subscriptions only post about issues carrying that label. So "waiting on you" must be one label. Proposal: `waiting:you`, added by `scripts/set-status.sh` when the status enters `needs-info`, `needs-human`, `needs-verification` or a pending research/split approval, and removed on leaving. The channel subscribes with `+label:"waiting:you"` only. The broad `issues pulls discussions releases` subscription goes away.
-- **All label changes go through `scripts/set-status.sh`.** It keeps exactly one `status:*`. It is the natural owner of `waiting:you`.
+- **Replies must reach GitHub with no server.** The only no-server path from Slack to GitHub is the GitHub app for Slack: its **Comment** button on an issue message posts an issue comment as the person's linked GitHub account (a plain thread reply does not reach GitHub; see Spike result). That keeps the existing trust check (write access) working. Incoming webhooks are one-way: fine for the done message and digest, useless for anything that needs a reply.
+- **Slack swallows leading `/`.** A Slack message starting with `/` is treated as a slash command and isn't sent. Reply keywords are plain words at the start of the reply: `approve`, `research …`, `block …`, `verified`, `accept …`, `reject …`. On GitHub, `/plan` and `/decide` keep working as before.
+- **The app's label filter.** The GitHub Slack app keeps one label filter per subscription, and filtered subscriptions only post about issues carrying that label. So "waiting on you" must be one label: `action:required` (the person's choice of name), added by `scripts/set-status.sh` when the status enters `needs-info`, `needs-human`, `needs-verification` or a pending research/split approval, and removed on leaving. The channel subscribes with `+label:"action:required"` only. The broad `issues pulls discussions releases` subscription goes away.
+- **All label changes go through `scripts/set-status.sh`.** It keeps exactly one `status:*`. It is the natural owner of `action:required`.
 - Writes use the `agentkit-bot` App token. Claude gets read-only or downscoped tokens. Only trusted authors/commenters are acted on. All new comment commands go through `.github/actions/trusted`.
 - GitHub Free: no branch protection on private repos, and merging stays the gate's `gh pr merge` when `AUTO_MERGE=true`.
 
@@ -79,7 +79,7 @@ The person's rule: a task can never start while a task it depends on isn't done.
 
 | Need | Existing piece | Change |
 |---|---|---|
-| Stuck ping | refine `needs-info` comment, `needs-human` handovers | `waiting:you` label + message shape (task, stuck on, why, checked) |
+| Stuck ping | refine `needs-info` comment, `needs-human` handovers | `action:required` label + message shape (task, stuck on, why, checked) |
 | Answer → continue | comment on `needs-info` re-runs refine | also covers mid-implementation questions (below) |
 | `research` / `block` / `approve` / `verified` / `accept` / `reject` replies | `/plan`, `/decide` comment parsing in caller + dispatch | one comment-command handler for issue comments |
 | Research task | `type:research` → `docs/research/<slug>.md` PR | link as blocker (`blocked_by`), hold the merge for approval, resume parent |
@@ -98,7 +98,7 @@ On turns on:
 - refine proposing splits (with `AUTO_SPLIT`);
 - research and RFC merge holds;
 - Slack reply keywords;
-- the `waiting:you` label;
+- the `action:required` label;
 - the done message;
 - the `AUTO_MERGE=true` requirement.
 
@@ -111,9 +111,9 @@ On turns on:
 - **Replies outside answer / research / block:**
   - On `needs-verification`, a free-text reply (not `verified`) is a failed check. The PR goes to `changes-requested` with that text as the feedback.
   - On `needs-human` (failed rounds, `reason:env`, `reason:agent-error`), a free-text reply re-runs the implementer on the existing branch with the reply as guidance, and resets the review-round counter. `retry` re-runs without guidance.
-  - On a `mode:human` task, `done` closes it, from Slack or `/board`. These tasks carry `waiting:you` while ready.
+  - On a `mode:human` task, `done` closes it, from Slack or `/board`. These tasks carry `action:required` while ready.
 - **`AUTO_MERGE=true` is required in this mode.** Setup and upgrade set it, and doctor fails without it. `approved` is never a waiting state.
-- **RFC PRs are held like research PRs.** The gate doesn't merge an RFC until `accept`/`reject`. The pending decision is a `waiting:you` state.
+- **RFC PRs are held like research PRs.** The gate doesn't merge an RFC until `accept`/`reject`. The pending decision is a `action:required` state.
 - **Manual rank beats everything.** A ranked issue goes ahead of the debt quota and priority. The quota and priority only order the unranked rest. `/board`'s top 5 uses the same sort as `dispatch.yml`, from one shared definition.
 
 ## Left to the builder
@@ -129,3 +129,16 @@ On turns on:
 
 - **Does the GitHub Slack app post when a filtered label is added to an issue,** and are the agent's later comments threaded under it so replies land on the right issue? Spike this on the scratch repo before building on it. If it doesn't, the fallback is a small Slack app of our own, which needs a hosted endpoint for replies. That would be a separate decision.
 - Slack ↔ GitHub account linking (`/github signin`) is required for replies to count as the person's. Doctor should check it, or the docs must say it.
+
+## Spike result (2026-11-03, agentkit-scratch, test channel)
+
+Subscription: `/github subscribe yaimgod-labs/agentkit-scratch issues comments +label:"action:required"`, defaults (`pulls commits releases deployments`) unsubscribed.
+
+| Question | Answer |
+|---|---|
+| Does adding the label post a message? | Yes. The App adding `action:required` posted one issue card ("Issue created by …", label shown) within the minute, even though the issue was opened earlier. |
+| Does the App's comment appear in that message's thread? | Yes, under the card, with Markdown (bold, code) kept. |
+| Does a reply from a linked account land as an issue comment by that account? | A plain thread reply: **no**, it stays in Slack. The card's **Comment** button: **yes**. The comment is by the person's account (`user.type` User, `author_association` MEMBER, `performed_via_github_app` slack), so the trusted-commenter check works unchanged. |
+| Does a reply starting with a plain word post normally? | Yes (`research …` posted both ways). |
+
+**Decision (the person's):** replies go through the Comment button, not thread replies. No server of our own. Every message that waits on the person ends with one line telling them to answer with the Comment button. The fallback (our own Slack app with a hosted endpoint) is not needed.
