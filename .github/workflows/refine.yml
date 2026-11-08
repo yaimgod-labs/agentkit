@@ -218,7 +218,7 @@ jobs:
           if jq -e '.status == "ready" and .mode == "human"' <<<"$verdict" >/dev/null; then human=true; fi
           if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -z "$research" ] && [ -z "$split" ] && [ -z "$asks" ]; then
             reply=
-            if [ "$status" = needs-info ]; then reply="Reply with an answer, \`research <what to find out>\`, or \`block <reason>\`."
+            if [ "$status" = needs-info ]; then reply="Reply with an answer, \`research <what to find out>\`, \`block <reason>\`, or \`close <why>\`."
             elif [ "$human" = true ]; then reply="Reply \`done\` once you have finished it, or \`block <reason>\`."; fi
             [ -z "$reply" ] || body+=$'\n\n'"$reply"$'\n'"Answer with the Comment button on this issue's card in Slack."
           fi

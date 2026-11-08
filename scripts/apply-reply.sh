@@ -23,6 +23,8 @@
 #   decide <accept [why]|reject why>  a /decide comment on the RFC PR (a bare accept notes no reason given)
 #   approve-split       a /plan comment
 #   done                clears its status, then closes the issue as completed
+#   close <why>         a comment with the person's reason, clears its status, then closes the issue: completed when
+#                       the reason starts with "done" or "already" (the work exists), not planned otherwise
 #   hint [word]         a comment listing the valid keywords; no label change
 #   none, or anything else: nothing.
 # The person's text is data: it reaches gh only on stdin (--body-file -, --input -) or through jq --arg/env. It can
@@ -36,7 +38,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 button="Answer with the Comment button on this issue's card in Slack."
 case "$action" in
   answer | research | block | unblock | replace | retry | guide | verified | failed-check | approve-research | \
-    override-research | decide | approve-split | split-feedback | done | hint) ;;
+    override-research | decide | approve-split | split-feedback | done | close | hint) ;;
   none) exit 0 ;;
   *) echo "apply-reply.sh: unknown action '$action'; nothing done" >&2; exit 0 ;;
 esac
@@ -52,7 +54,7 @@ chars() { jq -rn --arg t "$1" '$t | length'; }
 larg=$(one_line "$arg")
 qarg=$(quoted "$arg")
 case "$action" in
-  research | block | guide | failed-check | override-research | decide) [ -n "$larg" ] || usage "$action needs text" ;;
+  research | block | guide | failed-check | override-research | decide | close) [ -n "$larg" ] || usage "$action needs text" ;;
 esac
 len=$(chars "$arg")
 qlen=$(chars "$qarg")
@@ -223,6 +225,13 @@ $qarg"
   done)
     status "$n" ""
     gh issue close "$n" --repo "$repo" --reason completed >/dev/null ;;
+
+  close)
+    reason="not planned"
+    case "$(printf '%s' "$larg" | tr '[:upper:]' '[:lower:]')" in done | done[!a-z]* | already | already[!a-z]*) reason=completed ;; esac
+    comment "$n" "**Closed by @$login:** $larg"
+    status "$n" ""
+    gh issue close "$n" --repo "$repo" --reason "$reason" >/dev/null ;;
 
   hint)
     list='' kws=()

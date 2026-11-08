@@ -35,10 +35,12 @@ table = [
     (NI, "research why it drops", ("research", "why it drops")),
     (NI, "block waiting on legal", ("block", "waiting on legal")),
     (NI, "it is the second one", ("answer", "it is the second one")),
+    (NI, "close not needed any more", ("close", "not needed any more")),
     (NH, "retry", ("retry", "")),
     (NH, "research how X works", ("research", "how X works")),
     (NH, "block no access", ("block", "no access")),
     (NH, "try the other branch", ("guide", "try the other branch")),
+    (NH, "Close: already done in #12", ("close", "already done in #12")),
     (NV, "verified", ("verified", "")),
     (NV, "block broke on ios 17", ("block", "broke on ios 17")),
     (NV, "the button is still grey", ("failed-check", "the button is still grey")),
@@ -70,6 +72,8 @@ for punct in ".,:!":
 
 # test_keyword_wrong_status
 expect("keyword wrong status", act("verified", *NI) == ("hint", "verified"), act("verified", *NI))
+for labels in (NV, NA_R, NA_F, NA_S, BL, RH):
+    expect(f"close is only for needs-info and needs-human: {labels}", act("close why", *labels) == ("hint", "close"), act("close why", *labels))
 expect("block is not valid on blocked", act("block why", *BL) == ("hint", "block"))
 expect("approve on rfc is a hint", act("approve", *NA_F) == ("hint", "approve"))
 
@@ -83,7 +87,7 @@ expect("replace soon is a hint", act("replace soon", *BL) == ("hint", "replace")
 expect("replace #42 and more is a hint", act("replace #42 and #43", *BL) == ("hint", "replace"))
 
 # keywords that need an argument and have none
-for labels, kw in [(NI, "research"), (NH, "block"), (NA_F, "reject"), (BL, "replace")]:
+for labels, kw in [(NI, "research"), (NH, "block"), (NA_F, "reject"), (BL, "replace"), (NI, "close"), (NH, "close")]:
     expect(f"{kw} without an argument", act(kw, *labels) == ("hint", kw), act(kw, *labels))
 
 # decide: lowercase keyword plus its why
@@ -122,10 +126,10 @@ for raw in ('[]', '"x"', '{"body": 123, "labels": []}', '{"body": "a", "labels":
             '{"body": "a", "labels": "status:ready"}', '{"body": "a", "labels": [], "has_pr": "yes"}'):
     r = run_raw(raw)
     expect(f"bad input {raw} exits 2", r.returncode == 2 and r.stderr and not r.stdout, (r.returncode, r.stderr, r.stdout))
-expect("null body is empty", json.loads(run_raw('{"body": null, "labels": ["status:needs-info"]}').stdout) == {"action": "hint", "arg": "", "keywords": ["research", "block"], "free_text": True})
+expect("null body is empty", json.loads(run_raw('{"body": null, "labels": ["status:needs-info"]}').stdout) == {"action": "hint", "arg": "", "keywords": ["research", "block", "close"], "free_text": True})
 
 # keywords: the keywords valid for the status, in table order, whatever the reply was; none has none
-for labels, want in [(NI, ["research", "block"]), (NH, ["retry", "research", "block"]), (NV, ["verified", "block"]),
+for labels, want in [(NI, ["research", "block", "close"]), (NH, ["retry", "research", "block", "close"]), (NV, ["verified", "block"]),
                      (NA_R, ["approve", "block"]), (NA_F, ["accept", "reject", "block"]), (NA_S, ["approve", "block"]),
                      (BL, ["unblock", "replace"]), (RH, ["done", "block"])]:
     for body in ("free text here", "verified", ""):

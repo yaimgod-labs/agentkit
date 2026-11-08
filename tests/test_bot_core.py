@@ -45,6 +45,10 @@ expect("at most 3 answer buttons", len([e for e in many["blocks"][1]["elements"]
 nokw = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": ["status:needs-info"]})
 expect("needs-info: Research… and Block… open modals", [e["action_id"].split("_")[0] for e in nokw["blocks"][1]["elements"]][:2] == ["modal", "modal"])
 expect("no ask falls back", "Needs your input" in nokw["text"])
+nkw = [(e["text"]["text"], e["value"], e["action_id"].split("_")[0]) for e in nokw["blocks"][1]["elements"]]
+expect("needs-info: Close… comes last of the keywords, a modal", nkw[2:] == [("Close…", "o/r#7|close", "modal"), ("Other…", "o/r#7|", "modal")], nkw)
+withopts = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": ["status:needs-info"], "options": ["A", "B"]})
+expect("options come before keywords; Close… is cut first", [e["text"]["text"] for e in withopts["blocks"][1]["elements"]] == ["A", "B", "Research…", "Other…"])
 bad = dict(c); bad["blocks"] = [{"type": "section", "text": {"type": "mrkdwn", "text": "*" + "t" * 90 + "*\n" + "a" * 200 + "\n<http://a|1> <http://b|2>"}}, c["blocks"][1]]
 expect("lint flags title, ask and two links", len(card.lint(bad)) == 3, card.lint(bad))
 
