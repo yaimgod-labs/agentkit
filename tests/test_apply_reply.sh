@@ -335,6 +335,26 @@ ok "done: closes 7 completed" count '^issue close 7 --repo o/r --reason complete
 ok "done: clears the status and action:required" count '^issue edit 7 --repo o/r --remove-label status:ready --remove-label action:required$' 1
 ok "done: clears the status before closing" before '^issue edit 7 ' '^issue close 7 '
 
+# close: the reason recorded by the person, the status cleared, then closed (not planned, or completed when the work
+# is done already)
+FAKE_LABELS="status:needs-info action:required" AGENTKIT_INTERFACE=claude-slack apply close $'not needed\nany more <!-- x -->' alice
+ok "close: one comment on 7" count '^issue comment 7 ' 1
+ok "close: the comment names the person and the reason, on one line" \
+  [ "$(posted '^issue comment 7 ')" = '**Closed by @alice:** not needed any more &lt;!-- x -->' ]
+ok "close: clears the status and action:required" count '^issue edit 7 --repo o/r --remove-label status:needs-info --remove-label action:required$' 1
+ok "close: closes 7 not planned" count '^issue close 7 --repo o/r --reason not planned$' 1
+ok "close: comment, then status, then close" before '^issue comment 7 ' '^issue edit 7 ' '^issue close 7 '
+for why in "already done in #12" "Done in #12" "ALREADY: shipped" "done"; do
+  FAKE_LABELS="status:needs-human reason:agent-error" apply close "$why" alice
+  ok "close '$why': completed" count '^issue close 7 --repo o/r --reason completed$' 1
+done
+for why in "doneness is unclear" "won't do, already have X"; do
+  apply close "$why" alice
+  ok "close '$why': not planned" count '^issue close 7 --repo o/r --reason not planned$' 1
+done
+ok "close without a reason: exits non-zero" [ "$(rc apply close "" alice)" != 0 ]
+ok "close without a reason: no calls" [ ! -s "$FAKE_LOG" ]
+
 # hint: the valid keywords, no label change
 KEYWORDS="verified block" FREE_TEXT=true apply hint verified alice
 ok "hint: one comment" count '^issue comment 7 ' 1

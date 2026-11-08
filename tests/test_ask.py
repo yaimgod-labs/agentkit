@@ -70,7 +70,7 @@ expect("message: shape", lines == [
     "**Why I can't decide alone:** two owners",
     "**Checked:** docs/a.md, #12",
     "",
-    "Reply with an answer, `research <what to find out>`, or `block <reason>`.",
+    "Reply with an answer, `research <what to find out>`, `block <reason>`, or `close <why>`.",
     "Answer with the Comment button on this issue's card in Slack.",
 ], out)
 expect("message: no line of agent text starts a kit marker", not any(l.startswith("<!--") for l in lines), out)

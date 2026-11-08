@@ -24,7 +24,7 @@ import sys
 
 KINDS = ("question", "research")
 BUTTON = "Answer with the Comment button on this issue's card in Slack."
-REPLY = "Reply with an answer, `research <what to find out>`, or `block <reason>`."
+REPLY = "Reply with an answer, `research <what to find out>`, `block <reason>`, or `close <why>`."
 FIELD_MAX = 2000
 RESEARCH_MAX = 300
 MARKER = "<!-- agentkit:research-for #"

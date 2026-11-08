@@ -93,6 +93,8 @@ Opt-in per project: you steer from Claude Code (`/task`, `/board`) and answer ag
 gh agentkit upgrade <owner/repo> --interface claude-slack   # also on setup and init
 ```
 
+(`--interface slack-bot --card-channel C…` is the same mode with the Slack bot's cards on top: `docs/slack-bot.md`.)
+
 It sets `AGENTKIT_INTERFACE` and `AUTO_MERGE=true`, adds the `action:required` label and the **Needs approval** stage, and prints the Slack lines. The mode turns on:
 
 - new issues by a trusted author are refined at once (`refining`);
@@ -117,14 +119,16 @@ and `gh secret set SLACK_WEBHOOK_URL --repo <owner/repo>` for the done message, 
 
 | Status | Keywords | Free text |
 |---|---|---|
-| `needs-info` | `research <q>`, `block <reason>` | your answer; refine continues (with the agent PR open: the implementer's fix round) |
-| `needs-human` | `retry`, `research <q>`, `block <reason>` | guidance; the implementer re-runs with it (with no agent PR yet, `retry` and guidance go back to refine) |
+| `needs-info` | `research <q>`, `block <reason>`, `close <why>` | your answer; refine continues (with the agent PR open: the implementer's fix round) |
+| `needs-human` | `retry`, `research <q>`, `block <reason>`, `close <why>` | guidance; the implementer re-runs with it (with no agent PR yet, `retry` and guidance go back to refine) |
 | `needs-verification` | `verified`, `block <reason>` | a failed check; the PR goes back to the implementer |
 | `needs-approval`, research | `approve`, `block <reason>` | your own answer; it wins over the recommendation |
 | `needs-approval`, RFC | `accept [why]` (the record notes when no reason is given), `reject <why>`, `block <reason>` | none (a hint) |
 | `needs-approval`, split | `approve`, `block <reason>` | feedback; the split is proposed again |
 | `blocked` | `unblock`, `replace #N` | none (a hint) |
 | `ready` with `mode:human` | `done`, `block <reason>` | none (a hint) |
+
+`close <why>` closes the issue with your reason recorded: as completed when the reason starts with `done` or `already` (`close already done in #12`), as not planned otherwise.
 
 `/board` and `/task` work in either mode, in Claude Code (see above). An issue blocked by a dropped dependency (an issue it waited on was closed as not planned) gets no Slack card: handle it in Claude Code with `/board unblock <n>`, or `/board replace <n> <b>` when #b takes the dropped issue's place.
 

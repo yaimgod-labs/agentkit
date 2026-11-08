@@ -158,6 +158,11 @@ def on_modal(ack, body, client):
                     "element": {"type": "plain_text_input", "action_id": "t", "multiline": True}}]})
 
 
+@app.action("logs")
+def on_logs(ack):
+    ack()  # a link button: Slack opens the URL and still sends the click, which needs no answer
+
+
 @app.view("answer")
 def on_answer(ack, body, client, view):
     ack()
