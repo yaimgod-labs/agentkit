@@ -62,27 +62,49 @@ gh agentkit <command>
   app-create <org>            open the GitHub App creation page (from app/manifest.json)
   app-convert <code>          finish App creation: saves key + client id to ~/.config/agentkit
   secrets <owner/repo>        store the Claude token + App key as repo secrets, App client id as a variable
-  setup <owner/repo> [--base B] [--wip N] [--interface claude-slack]
+  setup <owner/repo> [--base B] [--wip N] [--interface claude-slack|slack-bot [--card-channel C…]]
                               labels, board, variables, branch protection (idempotent)
-  upgrade <owner/repo> [--interface claude-slack]
+  upgrade <owner/repo> [--interface claude-slack|slack-bot [--card-channel C…]]
                               after a kit release: labels, missing board stages, and one PR that syncs
                               the caller workflow (keeps your with:, refs and extra jobs) and adds new kit files
-  init <owner/repo> [--base B] [--wip N] [--interface claude-slack]
+  init <owner/repo> [--base B] [--wip N] [--interface claude-slack|slack-bot [--card-channel C…]]
                               setup + one PR adding the kit files (never overwrites existing files)
 
   --interface claude-slack    turn on the Claude Code + Slack mode: sets AGENTKIT_INTERFACE and AUTO_MERGE=true,
                               prints the Slack subscription lines
+  --interface slack-bot       the same, plus the Slack bot (docs/slack-bot.md): sets AGENTKIT_SLACK_BOT=true and
+                              AGENTKIT_CARD_CHANNEL, prints the command that stores the SLACK_BOT_TOKEN secret
+  --card-channel C…           the Slack channel id the cards go to (asked for when unset and not given)
   doctor <owner/repo>         verify everything; non-zero exit on failure
+                              (with the bot on and SLACK_BOT_TOKEN in your shell: also checks the token and channel)
 EOF
 }
 
 owner_of() { echo "${1%%/*}"; }
-# the --interface value; only claude-slack exists
-parse_interface() { [ "$1" = claude-slack ] || die "unknown interface '$1' (only claude-slack)"; }
+# the --interface value: claude-slack, or slack-bot (claude-slack plus the Slack bot)
+parse_interface() { case $1 in claude-slack|slack-bot) ;; *) die "unknown interface '$1' (claude-slack or slack-bot)";; esac; }
+
+# a Slack channel id (public C…, private G…), not a #name
+CHANNEL_RE='^[CG][A-Z0-9]+$'
+valid_channel() { [[ $1 =~ $CHANNEL_RE ]]; }
+
+# the card channel for slack-bot: --card-channel, else the one already set, else asked for (terminal only)
+card_channel() {
+  local repo=$1 c=$2
+  [ -n "$c" ] || c=$(var_get "$repo" AGENTKIT_CARD_CHANNEL)
+  if [ -z "$c" ]; then
+    [ -t 0 ] || die "slack-bot needs the card channel: --card-channel C0123456789 (Slack: channel details → bottom)"
+    printf 'Slack channel id for the cards (C…; channel details → bottom): ' >&2
+    read -r c
+  fi
+  valid_channel "$c" || die "'$c' is not a Slack channel id (C… or G…, from the channel details; not #name)"
+  echo "$c"
+}
 
 # Claude Code + Slack mode on: the repo variables, then the lines to run in the Slack channel
+# args: repo, interface (claude-slack|slack-bot), card channel (slack-bot only)
 enable_interface() {
-  local repo=$1
+  local repo=$1 iface=${2:-claude-slack} channel=${3:-}
   say "interface: claude-slack"
   gh variable set AGENTKIT_INTERFACE --repo "$repo" --body claude-slack
   gh variable set AUTO_MERGE --repo "$repo" --body true  # the mode needs it: approved is never a waiting state
@@ -94,9 +116,26 @@ enable_interface() {
 • answer in Slack with the Comment button on the issue's card (a plain thread reply stays in Slack)
 • for the done message and digest: gh secret set SLACK_WEBHOOK_URL --repo $repo
 EOT
+  [ "$iface" = slack-bot ] || return 0
+  say "Slack bot: on, cards go to $channel"
+  gh variable set AGENTKIT_SLACK_BOT --repo "$repo" --body true
+  gh variable set AGENTKIT_CARD_CHANNEL --repo "$repo" --body "$channel"
+  cat <<EOT
+• store the bot token (the same xoxb- token the bot server uses; gh asks for it, input hidden):
+    gh secret set SLACK_BOT_TOKEN --repo $repo
+• invite the bot to the channel, and add $repo to AGENTKIT_REPOS on the bot server (docs/slack-bot.md)
+• merge the caller PR (gh agentkit upgrade $repo), then: gh agentkit doctor $repo
+EOT
 }
 
 var_get() { gh variable get "$2" --repo "$1" 2>/dev/null || true; }
+
+# after flag parsing in setup/upgrade (reads and sets their iface and channel): --card-channel goes with slack-bot,
+# and slack-bot gets its channel before anything changes
+bot_flags() {
+  if [ "$iface" = slack-bot ]; then channel=$(card_channel "$1" "$channel")
+  elif [ -n "$channel" ]; then die "--card-channel goes with --interface slack-bot"; fi
+}
 
 # ---- GitHub App -----------------------------------------------------------
 
@@ -157,8 +196,9 @@ cmd_secrets() {
 
 cmd_setup() {
   local repo=${1:?owner/repo}; shift
-  local base="" wip="" iface=""
-  while [ $# -gt 0 ]; do case $1 in --base) base=$2; shift 2;; --wip) wip=$2; shift 2;; --interface) parse_interface "${2:-}"; iface=$2; shift 2;; *) die "unknown flag $1";; esac; done
+  local base="" wip="" iface="" channel=""
+  while [ $# -gt 0 ]; do case $1 in --base) base=$2; shift 2;; --wip) wip=$2; shift 2;; --interface) parse_interface "${2:-}"; iface=$2; shift 2;; --card-channel) channel=${2:-}; shift 2;; *) die "unknown flag $1";; esac; done
+  bot_flags "$repo"
   [ -n "$base" ] || base=$(gh repo view "$repo" --json defaultBranchRef --jq .defaultBranchRef.name)
 
   setup_labels "$repo"
@@ -171,7 +211,7 @@ cmd_setup() {
   fi
 
   setup_board "$repo"
-  if [ -n "$iface" ]; then enable_interface "$repo"; fi
+  if [ -n "$iface" ]; then enable_interface "$repo" "$iface" "$channel"; fi
 
   say "branch protection on $base"
   local body; body=$(jq -n --argjson checks "$(printf '%s\n' "${CHECKS[@]}" | jq -R . | jq -s .)" '{
@@ -272,7 +312,7 @@ cmd_init() {
   cmd_setup "$@"
   shift
   local base=""
-  while [ $# -gt 0 ]; do case $1 in --base) base=$2; shift 2;; *) shift 2;; esac; done  # --wip and --interface were handled by setup
+  while [ $# -gt 0 ]; do case $1 in --base) base=$2; shift 2;; *) shift 2;; esac; done  # --wip, --interface and --card-channel were handled by setup
   [ -n "$base" ] || base=$(gh repo view "$repo" --json defaultBranchRef --jq .defaultBranchRef.name)
 
   local tmp; tmp=$(mktemp -d -t agentkit-init)
@@ -313,12 +353,13 @@ sync_checkout() {
 
 cmd_upgrade() {
   local repo=${1:?owner/repo}; shift
-  local iface=""
-  while [ $# -gt 0 ]; do case $1 in --interface) parse_interface "${2:-}"; iface=$2; shift 2;; *) die "unknown flag $1";; esac; done
+  local iface="" channel=""
+  while [ $# -gt 0 ]; do case $1 in --interface) parse_interface "${2:-}"; iface=$2; shift 2;; --card-channel) channel=${2:-}; shift 2;; *) die "unknown flag $1";; esac; done
+  bot_flags "$repo"
   setup_labels "$repo"
   gh repo edit "$repo" --enable-discussions >/dev/null  # the weekly retro posts there
   setup_board "$repo"
-  if [ -n "$iface" ]; then enable_interface "$repo"; fi
+  if [ -n "$iface" ]; then enable_interface "$repo" "$iface" "$channel"; fi
   local def; def=$(gh repo view "$repo" --json defaultBranchRef --jq .defaultBranchRef.name)
   local tmp; tmp=$(mktemp -d -t agentkit-upgrade)
   gh repo clone "$repo" "$tmp/repo" -- --depth 1 --branch "$def" -q
@@ -363,6 +404,62 @@ doctor_interface() {
   echo "        Slack mode: run /github signin in the channel once, then the subscribe lines (gh agentkit upgrade $1 --interface claude-slack prints them)"
 }
 
+# the Slack bot's requirements, only where AGENTKIT_SLACK_BOT=true; ok/bad/warn come from cmd_doctor
+# args: repo, the secret names, the caller workflow's text (on the default branch)
+# With SLACK_BOT_TOKEN in the local environment, also asks Slack; the token goes to curl on stdin, never in argv.
+# The bot server's own connection cannot be checked from here (Slack has no API for it).
+doctor_bot() {
+  [ "$(var_get "$1" AGENTKIT_SLACK_BOT)" = true ] || return 0
+  local repo=$1 fix="gh agentkit upgrade $1 --interface slack-bot"
+  [ "$(var_get "$repo" AGENTKIT_INTERFACE)" = claude-slack ] \
+    && ok "AGENTKIT_INTERFACE=claude-slack (the Slack bot needs it)" \
+    || bad "AGENTKIT_SLACK_BOT=true but AGENTKIT_INTERFACE is not claude-slack ($fix)"
+  local chan; chan=$(var_get "$repo" AGENTKIT_CARD_CHANNEL)
+  if [ -z "$chan" ]; then bad "variable AGENTKIT_CARD_CHANNEL missing: cards have nowhere to go ($fix --card-channel C0123456789)"
+  elif valid_channel "$chan"; then ok "variable AGENTKIT_CARD_CHANNEL ($chan)"
+  else bad "variable AGENTKIT_CARD_CHANNEL '$chan' is not a channel id, C… or G… ($fix --card-channel C0123456789)"; fi
+  grep -qx SLACK_BOT_TOKEN <<<"$2" \
+    && ok "secret SLACK_BOT_TOKEN" || bad "secret SLACK_BOT_TOKEN missing: no cards (gh secret set SLACK_BOT_TOKEN --repo $repo)"
+  # upgrade sets the variables before its caller PR merges: until then clicks and cards do nothing
+  local merge="merge the gh agentkit upgrade $repo PR"
+  grep -q 'types: \[agentkit-slack-reply\]' <<<"${3:-}" && grep -q '^  repository_dispatch:' <<<"${3:-}" \
+    && ok "caller takes the bot's repository_dispatch" || warn "the caller has no repository_dispatch trigger for agentkit-slack-reply: button clicks do nothing ($merge)"
+  grep -q '/\.github/workflows/card\.yml@' <<<"${3:-}" \
+    && ok "caller has the card job" || warn "the caller has no card job: no cards are posted ($merge)"
+  # the dispatch job's own block: from its name to the next job
+  awk '/^  dispatch:/{d=1; next} /^  [A-Za-z_][A-Za-z0-9_-]*:/{d=0} d' <<<"${3:-}" | grep -q 'SLACK_BOT_TOKEN: \${{ secrets.SLACK_BOT_TOKEN }}' \
+    && ok "caller's dispatch job gets SLACK_BOT_TOKEN" || warn "the caller's dispatch job does not pass SLACK_BOT_TOKEN: no Done cards ($merge)"
+
+  if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
+    echo "        Slack bot: export SLACK_BOT_TOKEN in this shell to also check the token and the channel with Slack"
+  else
+    local resp err
+    resp=$(slack_api auth.test) || resp='{"ok":false,"error":"no answer from slack.com"}'
+    if [ "$(jq -r .ok <<<"$resp")" = true ]; then ok "Slack auth.test: bot $(jq -r .user <<<"$resp") in $(jq -r .team <<<"$resp")"
+    else bad "Slack auth.test: $(jq -r '.error // "failed"' <<<"$resp") (the local SLACK_BOT_TOKEN is not a working bot token)"; fi
+    if valid_channel "$chan"; then
+      resp=$(slack_api "conversations.info?channel=$chan") || resp='{"ok":false,"error":"no answer from slack.com"}'
+      err=$(jq -r '.error // ""' <<<"$resp" 2>/dev/null || echo "not a Slack answer")
+      if [ "$(jq -r .ok <<<"$resp")" = true ]; then
+        ok "Slack channel #$(jq -r .channel.name <<<"$resp") reachable"
+        if [ "$(jq -r .channel.is_member <<<"$resp")" = false ]; then
+          warn "the bot is not in #$(jq -r .channel.name <<<"$resp"): invite it there (/invite @<bot>)"
+        fi
+      elif [ "$err" = missing_scope ]; then
+        warn "can't check the channel: needs $(jq -r '.needed // "channels:read"' <<<"$resp") (the bot itself needs only chat:write)"
+      else
+        bad "Slack channel $chan: $err (wrong id, or a private channel the bot was not invited to)"
+      fi
+    fi
+  fi
+  echo "        Slack bot: the bot server's connection and its users.json cannot be checked from here (see docs/slack-bot.md)"
+}
+
+# a Slack Web API GET with the local SLACK_BOT_TOKEN; the header goes in on stdin so the token is never in argv
+slack_api() {
+  printf 'header = "Authorization: Bearer %s"\n' "$SLACK_BOT_TOKEN" | curl -sS --max-time 20 -K - "https://slack.com/api/$1"
+}
+
 cmd_doctor() {
   local repo=${1:?owner/repo}
   local owner fail=0; owner=$(owner_of "$repo")
@@ -392,6 +489,7 @@ cmd_doctor() {
 
   local caller_text; caller_text=$(gh api "repos/$repo/contents/.github/workflows/agentkit.yml?ref=$def" --jq .content 2>/dev/null | base64 -d 2>/dev/null || true)
   doctor_interface "$repo" "$secrets" "$have" "$caller_text"
+  doctor_bot "$repo" "$secrets" "$caller_text"
 
   local num; num=$(var_get "$repo" AGENTKIT_PROJECT)
   if [ -n "$num" ]; then

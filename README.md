@@ -93,6 +93,8 @@ Opt-in per project: you steer from Claude Code (`/task`, `/board`) and answer ag
 gh agentkit upgrade <owner/repo> --interface claude-slack   # also on setup and init
 ```
 
+(`--interface slack-bot --card-channel C…` is the same mode with the Slack bot's cards on top: `docs/slack-bot.md`.)
+
 It sets `AGENTKIT_INTERFACE` and `AUTO_MERGE=true`, adds the `action:required` label and the **Needs approval** stage, and prints the Slack lines. The mode turns on:
 
 - new issues by a trusted author are refined at once (`refining`);
