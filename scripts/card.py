@@ -51,6 +51,7 @@ def plain(line):
 def derive(comments):
     """(ask, options) from the kit's comments on a waiting issue, oldest first: the latest one that says what it
     needs. A STUCK message: its `Stuck on` and `Options` lines. An RFC or research recommendation: its first line.
+    Refine's `## Questions`: the first question.
     Anything else: the first line of the latest comment. Missing: (None, [])."""
     for body in reversed(comments):
         if body.startswith("<!-- agentkit:recommendation -->"):
@@ -62,6 +63,9 @@ def derive(comments):
         if m:
             o = re.search(r"^\*\*Options:\*\* (.+)$", body, re.M)
             return plain(m.group(1)), [x.strip() for x in o.group(1).split(" | ")][:BUTTONS_MAX] if o else []
+        q = re.search(r"^## Questions\s*\n+\s*(?:1\.|-)\s*(.+)$", body, re.M)
+        if q:  # refine's open questions: the first one, without its "default if unanswered" tail
+            return plain(re.split(r"\s+—\s+default if unanswered", q.group(1))[0]), []
         line = next((l for l in body.splitlines() if plain(l) and not l.startswith("<!--")), "")
         if plain(line):
             return plain(line), []

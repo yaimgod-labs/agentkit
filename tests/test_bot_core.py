@@ -53,6 +53,8 @@ expect("derive: stuck message gives ask and options", card.derive(["x", stuck]) 
 expect("derive: recommendation gives its first line", card.derive(["<!-- agentkit:recommendation -->\n> Adopt **option A**: one file per module.\n>\n> Reasons"]) == ("Adopt option A: one file per module.", []))
 expect("derive: any other comment gives its first line", card.derive(["<!-- m -->\nagentkit: all checks passed; 1 item needs a person."]) == ("agentkit: all checks passed; 1 item needs a person.", []))
 expect("derive: a recommendation line ending in : takes the next line", card.derive(["<!-- agentkit:recommendation -->\n> Adopt **C**:\n>\n> 1. Keep each constant in its module.\n> 2. More"]) == ("Adopt C: 1. Keep each constant in its module.", []))
+refine = "## Plan\n- do x\n\n## Questions\n1. Should `negate` throw for non-numbers? — default if unanswered: no check.\n2. Other?\n\nReply with an answer"
+expect("derive: refine questions give the first question", card.derive([refine]) == ("Should negate throw for non-numbers?", []), card.derive([refine]))
 expect("derive: nothing gives nothing", card.derive([]) == (None, []))
 c2 = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": ["status:needs-human"], "comments": [stuck]})
 expect("build uses derived ask and options", "which library?" in c2["text"] and [e["text"]["text"] for e in c2["blocks"][1]["elements"]][:2] == ["Allow web", "Use memory"])
