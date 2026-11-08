@@ -5,27 +5,59 @@ The bot is one container with no inbound port (Slack Socket Mode connects outbou
 
 ## Slack app
 
-Create a Slack app from a manifest with Socket Mode on, Interactivity on, and bot scope `chat:write` (plus `chat:write.public`
-if the queue channel is public). Install it. Keep two tokens: the bot token (`xoxb-…`) and an app-level token (`xapp-…`,
-scope `connections:write`).
+Create a Slack app with Socket Mode on and Interactivity on, **no event subscriptions**, and one bot scope: `chat:write`
+(no `chat:write.public`). Keep two tokens: the bot token (`xoxb-…`) and an app-level token (`xapp-…`, scope
+`connections:write`). Use a **private** channel for the cards and invite the bot; who may act is decided by `users.json`,
+not by who can see the channel.
+
+## GitHub App
+
+Give the bot **its own GitHub App** if you can: it needs only `contents: write` (for `repository_dispatch`) and
+`metadata: read` (the permission check). The workflows sign the reply record with the lifecycle App's key, so the bot
+never holds that key. Install it only on the repos in `AGENTKIT_REPOS`, and protect the default branch there (rulesets),
+since `contents: write` can push to an unprotected branch. The bot mints a token per click for that one repo, limited to
+those two permissions.
 
 ## Server files (never in a repo)
 
 | File | Content |
 |---|---|
-| `users.json` | `{"<Slack user id>": "<github login>"}`, one per person who may answer |
-| `app.pem` | the agentkit GitHub App's private key |
+| `users.json` | `{"<Slack user id>": "<github login>"}`: the allowlist of people who may act |
+| `app.pem` | the bot's GitHub App private key |
+| `slack_bot_token`, `slack_app_token` | one token per file |
+
+`AGENTKIT_REPOS` (comma-separated `owner/repo`) is the second allowlist: the bot refuses any other repository.
 
 ## Run
 
+The image pins its base by digest and installs from a hashed lockfile (`bot/requirements.txt`, made from
+`requirements.in` with `uv pip compile --universal --python-version 3.12 --generate-hashes`). It runs as a non-root
+user and works on a read-only filesystem.
+
+```yaml
+services:
+  agentkit-bot:
+    build: ./bot
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      AGENTKIT_REPOS: owner/repo1,owner/repo2
+      GITHUB_CLIENT_ID: Iv1.xxxxxxxx
+      GITHUB_APP_KEY_FILE: /run/secrets/app_pem
+      USERS_FILE: /run/secrets/users_json
+      SLACK_BOT_TOKEN_FILE: /run/secrets/slack_bot_token
+      SLACK_APP_TOKEN_FILE: /run/secrets/slack_app_token
+    secrets: [app_pem, users_json, slack_bot_token, slack_app_token]
+secrets:
+  app_pem: {file: /srv/agentkit-bot/app.pem}
+  users_json: {file: /srv/agentkit-bot/users.json}
+  slack_bot_token: {file: /srv/agentkit-bot/slack_bot_token}
+  slack_app_token: {file: /srv/agentkit-bot/slack_app_token}
 ```
-docker build -t agentkit-bot bot/
-docker run -d --restart unless-stopped --name agentkit-bot \
-  -e SLACK_BOT_TOKEN -e SLACK_APP_TOKEN -e GITHUB_CLIENT_ID \
-  -e AGENTKIT_REPOS=owner/repo1,owner/repo2 \
-  -e GITHUB_APP_KEY_FILE=/secrets/app.pem -e USERS_FILE=/secrets/users.json \
-  -v /srv/agentkit-bot:/secrets:ro agentkit-bot
-```
+
+Secret files must be readable by uid 10001. Never enable debug logging for Bolt or the Slack SDK: it logs payloads.
 
 ## Post a card (slice 1, by hand)
 

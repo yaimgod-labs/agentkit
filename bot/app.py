@@ -1,6 +1,7 @@
 """agentkit Slack bot (Socket Mode): a click on a card becomes a `repository_dispatch` to the project's reply workflow.
-Everything it decides is in core.py. Env: SLACK_BOT_TOKEN, SLACK_APP_TOKEN, GITHUB_CLIENT_ID, GITHUB_APP_KEY_FILE,
-USERS_FILE, AGENTKIT_REPOS (comma-separated owner/repo allowlist)."""
+Everything it decides is in core.py. Env: SLACK_BOT_TOKEN and SLACK_APP_TOKEN (or the same name with _FILE, a path
+to a file holding the value), GITHUB_CLIENT_ID, GITHUB_APP_KEY_FILE, USERS_FILE, AGENTKIT_REPOS (comma-separated
+owner/repo allowlist). Never turn on debug logging of Bolt or the Slack SDK: it logs payloads."""
 import json
 import os
 import re
@@ -13,9 +14,15 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 import core
 
+def secret(name):
+    """A secret from NAME_FILE (a mounted file) when set, else from NAME."""
+    path = os.environ.get(name + "_FILE")
+    return open(path).read().strip() if path else os.environ[name]
+
+
 REPOS = {r.strip() for r in os.environ["AGENTKIT_REPOS"].split(",") if r.strip()}
 USERS = core.load_users(os.environ["USERS_FILE"])
-app = App(token=os.environ["SLACK_BOT_TOKEN"])
+app = App(token=secret("SLACK_BOT_TOKEN"))
 
 
 def gh(method, path, token, body=None):
@@ -33,7 +40,9 @@ def install_token(repo):
     key = open(os.environ["GITHUB_APP_KEY_FILE"]).read()
     app_jwt = jwt.encode({"iat": now - 60, "exp": now + 300, "iss": os.environ["GITHUB_CLIENT_ID"]}, key, algorithm="RS256")
     inst = gh("GET", f"/repos/{repo}/installation", app_jwt)["id"]
-    return gh("POST", f"/app/installations/{inst}/access_tokens", app_jwt)["token"]
+    # only this repo, and only what the dispatch and the permission check need
+    scope = {"repositories": [repo.split("/")[1]], "permissions": {"contents": "write", "metadata": "read"}}
+    return gh("POST", f"/app/installations/{inst}/access_tokens", app_jwt, scope)["token"]
 
 
 def act(slack_user, value, text, say_to, done):
@@ -100,4 +109,4 @@ def on_answer(ack, body, client, view):
 
 
 if __name__ == "__main__":
-    SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start()
+    SocketModeHandler(app, secret("SLACK_APP_TOKEN")).start()
