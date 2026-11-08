@@ -80,7 +80,9 @@ and run `gh agentkit upgrade owner/repo` so the caller has the `repository_dispa
 jobs. When an issue starts waiting on a person (label `action:required`), the `card` job posts one short card to the
 channel: the question from the agent's `STUCK:` message (with its `options` as buttons), the first line of an RFC or
 research recommendation, or the first line of the kit's latest comment. It waits up to a minute for the kit's explaining
-comment to land after the label. The card is posted once per `action:required` label; it is not yet edited when the
+comment to land after the label. When the gate merges an agent PR, the channel gets a short **Done** card (title, the first line of the PR's
+`## Summary`, link; no buttons) instead of the long "task done" message the webhook sends without the bot. The caller's
+`dispatch` job needs the `SLACK_BOT_TOKEN` secret for it. The card is posted once per `action:required` label; it is not yet edited when the
 issue is answered or closed somewhere else.
 
 To post a card by hand (for example to test), send the same JSON to `scripts/card.py post` with `SLACK_BOT_TOKEN` and

@@ -57,6 +57,12 @@ expect("derive: nothing gives nothing", card.derive([]) == (None, []))
 c2 = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": ["status:needs-human"], "comments": [stuck]})
 expect("build uses derived ask and options", "which library?" in c2["text"] and [e["text"]["text"] for e in c2["blocks"][1]["elements"]][:2] == ["Allow web", "Use memory"])
 
+d = card.done({"number": 96, "title": "RFC: where to put shared constants", "url": "https://github.com/o/r/pull/97",
+               "body": "## Summary\nI added RFC 0002, `docs/rfcs/0002-shared-constants.md`, in proposed status. It compares four ways.\n\n## Changes\n- x"})
+expect("done card: title, first Summary line, link, no buttons", len(d["blocks"]) == 1 and "✓ RFC: where" in d["text"] and "I added RFC 0002" in d["text"] and "pull/97|#96" in d["blocks"][0]["text"]["text"], d)
+expect("done card within budget", card.lint(d) == [], card.lint(d))
+expect("done card without a Summary says Merged.", "Merged." in card.done({"number": 1, "title": "t", "url": "u", "body": None})["text"])
+
 # post: a network error is retried, Slack's answer is used
 import io, os, urllib.error
 os.environ.update(SLACK_CHANNEL="C1", SLACK_BOT_TOKEN="x")
