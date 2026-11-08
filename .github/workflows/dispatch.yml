@@ -171,6 +171,7 @@ jobs:
           BODY: ${{ github.event.comment.body }}
           LOGIN: ${{ github.event.comment.user.login }}
           AGENTKIT_BOT: ${{ steps.app.outputs.app-slug }}[bot]
+          AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}  # verifies Slack reply records (people.sh)
         run: |
           grep -qiE '^/decide (accept|reject)\b' <<<"$BODY" || { gh pr comment "$PR" --repo "$REPO" --body "agentkit: use \`/decide accept <why>\` or \`/decide reject <why>\`."; exit 0; }
           n=$(gh pr view "$PR" --repo "$REPO" --json headRefName --jq .headRefName | sed -nE 's#^agent/([0-9]+)-.*#\1#p')

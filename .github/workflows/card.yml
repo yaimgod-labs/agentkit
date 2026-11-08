@@ -1,0 +1,76 @@
+# Slack bot mode (repo var AGENTKIT_SLACK_BOT=true, on top of AGENTKIT_INTERFACE=claude-slack): an issue that starts
+# waiting on a person (label action:required added) gets one short card in the bot's channel (scripts/card.py).
+# The channel is repo var AGENTKIT_CARD_CHANNEL; the bot token is secret SLACK_BOT_TOKEN. Neither reaches Claude.
+name: agentkit-card
+
+on:
+  workflow_call:
+    inputs:
+      agentkit-ref:
+        description: Override the kit commit, branch or tag to load scripts from (default — the commit the caller's `uses:` resolved to)
+        type: string
+        default: ""
+    secrets:
+      AGENTKIT_APP_KEY:
+        required: true
+      SLACK_BOT_TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  card:
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      REPO: ${{ github.repository }}
+      N: ${{ github.event.issue.number }}
+      CHANNEL: ${{ vars.AGENTKIT_CARD_CHANNEL }}
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-issues: read
+          permission-actions: read  # Load agentkit reads this run's referenced workflows
+
+      - name: Load agentkit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: card.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+
+      - name: Post the card
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BOT: ${{ steps.app.outputs.app-slug }}[bot]
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ vars.AGENTKIT_CARD_CHANNEL }}
+        run: |
+          [ -n "$SLACK_CHANNEL" ] || { echo "::error::repo variable AGENTKIT_CARD_CHANNEL is not set"; exit 1; }
+          [[ $N =~ ^[1-9][0-9]*$ ]] || { echo "::error::not an issue number"; exit 1; }
+          # The status is set first and the explaining comment right after it, so the label event can arrive before
+          # the comment: wait for the kit's newest comment to be after the issue's last update, for up to a minute
+          # (ponytail: a poll, not an event; a card from the previous comment is the worst case).
+          since=$(gh issue view "$N" --repo "$REPO" --json updatedAt --jq .updatedAt)
+          for _ in 1 2 3 4 5 6; do
+            issue=$(gh issue view "$N" --repo "$REPO" --json state,title,labels,comments)
+            newest=$(BOT="$BOT" jq -r '[.comments[] | select(.author.login == env.BOT) | .createdAt] | max // ""' <<<"$issue")
+            [[ -n $newest && ! $newest < $since ]] && break
+            sleep 10
+          done
+          [ "$(jq -r .state <<<"$issue")" = OPEN ] || { echo "#$N is closed; no card"; exit 0; }
+          jq -e '[.labels[].name] | index("action:required")' <<<"$issue" >/dev/null || { echo "#$N no longer waits; no card"; exit 0; }
+          # only the kit's own comments say what the issue needs; a person's or an agent-as-user's text never becomes the ask
+          jq -c --arg repo "$REPO" --argjson n "$N" --arg bot "$BOT" \
+            '{repo: $repo, number: $n, title, labels: [.labels[].name], comments: [.comments[] | select(.author.login == $bot) | .body]}' <<<"$issue" \
+            | python3 .agentkit-kit/scripts/card.py post

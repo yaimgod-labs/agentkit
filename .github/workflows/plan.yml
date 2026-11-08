@@ -92,6 +92,7 @@ jobs:
           REPO: ${{ github.repository }}
           N: ${{ github.event.issue.number }}
           BOT: ${{ steps.app.outputs.app-slug }}[bot]
+          AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}  # verifies Slack reply records (people.sh)
         run: |
           latest=$(gh api --paginate "repos/$REPO/issues/$N/comments" \
             --jq '.[] | select(.user.login == env.BOT and (.body | startswith("**Proposed split**"))) | {id, body} | tojson' | tail -n 1)

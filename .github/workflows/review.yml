@@ -457,6 +457,7 @@ jobs:
           MAX_ROUNDS: ${{ inputs.max-rounds }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           AGENTKIT_BOT: ${{ steps.app.outputs.app-slug }}[bot]
+          AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}  # verifies Slack reply records (people.sh)
         run: |
           # a newer push cancelled this run's reviews: that run's gate decides
           if jq -e 'any(.[]; .result == "cancelled")' <<<"$NEEDS" >/dev/null; then exit 0; fi

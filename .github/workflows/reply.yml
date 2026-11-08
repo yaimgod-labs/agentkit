@@ -1,7 +1,10 @@
 # Claude Code + Slack mode: a person answers a waiting issue (action:required or status:blocked) with the Comment
 # button on its Slack card, and Slack's GitHub app posts that answer as an issue comment by the person's account.
 # This workflow maps the comment to one action (scripts/reply.py) and carries it out (scripts/apply-reply.sh).
-# The caller runs it only when AGENTKIT_INTERFACE is claude-slack.
+# The caller runs it only when AGENTKIT_INTERFACE is claude-slack or slack-bot.
+# In slack-bot mode the reply arrives as a repository_dispatch event `agentkit-slack-reply` from the kit's Slack bot
+# (client_payload: {issue, text, login}); `login` is the GitHub login the bot mapped the Slack user to. It is checked
+# for write access here again, and the workflow writes the signed record of the reply (slackrec.py).
 name: agentkit-reply
 
 on:
@@ -26,11 +29,11 @@ jobs:
     # cancels the pending second before it starts (that run never runs a step). A running reply is never cancelled by
     # another; one that times out or is cancelled by hand hands over below
     concurrency:
-      group: agentkit-reply-${{ github.event.issue.number }}
+      group: agentkit-reply-${{ github.event.issue.number || github.event.client_payload.issue }}
       cancel-in-progress: false
     env:
       REPO: ${{ github.repository }}
-      N: ${{ github.event.issue.number }}
+      N: ${{ github.event.issue.number || github.event.client_payload.issue }}
       AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
     steps:
       - id: app
@@ -63,7 +66,7 @@ jobs:
         continue-on-error: true  # an untrusted commenter is ignored, not an error
         uses: ./.agentkit-kit/.github/actions/trusted
         with:
-          logins: ${{ github.event.comment.user.login }}
+          logins: ${{ github.event.comment.user.login || github.event.client_payload.login }}
           token: ${{ steps.app.outputs.token }}
           bot: ${{ steps.app.outputs.app-slug }}[bot]
           require-all: "true"
@@ -72,16 +75,18 @@ jobs:
         if: steps.trust.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-          LOGIN: ${{ github.event.comment.user.login }}
+          LOGIN: ${{ github.event.comment.user.login || github.event.client_payload.login }}
           AGENTKIT_BOT: ${{ steps.app.outputs.app-slug }}[bot]
+          AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}  # signs the Slack reply record
         run: |
           # defense in depth: the kit never answers itself (its own stuck messages and pings land on waiting issues);
           # login and type come from the event file, not an expression
-          author=$(jq -r '"\(.comment.user.login // "") \(.comment.user.type // "")"' "$GITHUB_EVENT_PATH")
+          [[ $N =~ ^[1-9][0-9]*$ ]] || { echo "::error::not an issue number"; exit 1; }
+          author=$(jq -r '"\(.comment.user.login // .client_payload.login // "") \(.comment.user.type // "")"' "$GITHUB_EVENT_PATH")
           if [ "${author% *}" = "$AGENTKIT_BOT" ] || [ "${author##* }" = Bot ]; then echo "#$N: a bot's comment; nothing to do"; exit 0; fi
           # the comment body is read from the event file with jq, never through an expression or one env value
           # (one argument or env value is capped at 128 KiB on Linux; apply-reply.sh takes the text as an argument)
-          size=$(jq -j '.comment.body // ""' "$GITHUB_EVENT_PATH" | wc -c)
+          size=$(jq -j '.comment.body // .client_payload.text // ""' "$GITHUB_EVENT_PATH" | wc -c)
           if [ "$size" -gt 100000 ]; then
             gh issue comment "$N" --repo "$REPO" --body "agentkit: that reply is too long (over 60000 characters); shorten it and answer again."
             exit 0
@@ -90,14 +95,22 @@ jobs:
           # Captured first so an API error fails the step (fail closed; the next step hands over)
           issue=$(gh issue view "$N" --repo "$REPO" --json state,labels)
           [ "$(jq -r .state <<<"$issue")" = OPEN ] || { echo "#$N is closed; nothing to do"; exit 0; }
-          out=$(jq -c --argjson issue "$issue" '{body: (.comment.body // ""), labels: [$issue.labels[].name]}' "$GITHUB_EVENT_PATH" \
+          out=$(jq -c --argjson issue "$issue" '{body: (.comment.body // .client_payload.text // ""), labels: [$issue.labels[].name]}' "$GITHUB_EVENT_PATH" \
             | python3 .agentkit-kit/scripts/reply.py)
           action=$(jq -r .action <<<"$out")
           arg=$(jq -r .arg <<<"$out")
           KEYWORDS=$(jq -r '.keywords | join(" ")' <<<"$out")
           FREE_TEXT=$(jq -r .free_text <<<"$out")
           # the reply's own comment id: a rounds reset names it, so the gate counts it once and only for a person
-          COMMENT_ID=$(jq -r '.comment.id' "$GITHUB_EVENT_PATH")
+          COMMENT_ID=$(jq -r '.comment.id // ""' "$GITHUB_EVENT_PATH")
+          # from Slack the person's say is a signed record the kit writes (slackrec.py): people.sh and the gate count it
+          # as that login's comment, and its id is the COMMENT_ID a retry or guidance names. Nothing to record for a
+          # reply that does nothing
+          if [ "$GITHUB_EVENT_NAME" = repository_dispatch ] && [ "$action" != none ] && [ "$action" != hint ]; then
+            COMMENT_ID=$(jq -j '.client_payload.text // ""' "$GITHUB_EVENT_PATH" \
+              | python3 .agentkit-kit/scripts/slackrec.py sign "$REPO" "$N" "$LOGIN" \
+              | gh api "repos/$REPO/issues/$N/comments" -F body=@- --jq .id)
+          fi
           export KEYWORDS FREE_TEXT COMMENT_ID
           # the person's text is never echoed: a log line can carry workflow commands
           echo "#$N: $action"

@@ -6,7 +6,8 @@ before it reaches a comment.
   ask.py stuck < claude-final-message
       The last line that starts with `STUCK: `, as compact JSON, when it is an object with `kind` "question" or
       "research", a non-empty string `text`, and `why`/`checked` strings when present. Each field is at most 2000
-      characters, and a research `text` at most 300 (refine's rule). Otherwise nothing: an invalid STUCK line, or
+      characters, and a research `text` at most 300 (refine's rule). Optional `options`: 1-3 strings of at most 40
+      characters, the answers the Slack card offers as buttons. Otherwise nothing: an invalid STUCK line, or
       one that cannot be parsed at all (deep nesting), is treated as absent, and the command never fails on it.
   ask.py research < verdict-json
       Refine's optional `research` key: 1-3 non-empty strings of at most 300 characters. Prints each on one line
@@ -37,7 +38,13 @@ def valid_stuck(d):
     return (isinstance(d, dict) and d.get("kind") in KINDS
             and isinstance(d.get("text"), str) and d["text"].strip() != ""
             and len(d["text"]) <= (RESEARCH_MAX if d["kind"] == "research" else FIELD_MAX)
-            and all(isinstance(d[k], str) and len(d[k]) <= FIELD_MAX for k in ("why", "checked") if k in d))
+            and all(isinstance(d[k], str) and len(d[k]) <= FIELD_MAX for k in ("why", "checked") if k in d)
+            and ("options" not in d or valid_options(d["options"])))
+
+
+def valid_options(o):
+    """The answers an agent offers as buttons: 1-3 non-empty strings of at most 40 characters."""
+    return isinstance(o, list) and 1 <= len(o) <= 3 and all(isinstance(x, str) and x.strip() and len(x) <= 40 for x in o)
 
 
 def stuck(text):
@@ -86,6 +93,7 @@ def message(d):
         f"**Stuck on:** {field('text')}",
         f"**Why I can't decide alone:** {field('why')}",
         f"**Checked:** {field('checked')}",
+        *([ "**Options:** " + " | ".join(one_line(o).replace("|", "/") for o in d["options"]) ] if "options" in d else []),
         "",
         REPLY,
         BUTTON,

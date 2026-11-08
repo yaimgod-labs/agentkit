@@ -124,4 +124,16 @@ expect("nested: not JSON counts as nested (fail safe)", run("nested", "oops")[0]
 r = subprocess.run([sys.executable, str(SCRIPT), "bogus"], input="", capture_output=True, text=True)
 expect("unknown command exits 2", r.returncode == 2, r.returncode)
 
+# --- options: the answers the Slack card offers as buttons
+qo = {**q, "options": ["Allow web", "Use memory"]}
+out, _ = run("stuck", "STUCK: " + json.dumps(qo))
+expect("stuck: 1-3 short options are kept", json.loads(out) == qo, out)
+for bad_opts in [[], ["a", "b", "c", "d"], ["x" * 41], [""], "yes", [1]]:
+    out, _ = run("stuck", "STUCK: " + json.dumps({**q, "options": bad_opts}))
+    expect(f"stuck: options {bad_opts!r} make the line invalid", out == "", out)
+out, _ = run("message", json.dumps({**qo, "options": ["a | b", "c"]}))
+expect("message: options on one line, | in an option becomes /", "**Options:** a / b | c\n" in out, out)
+out, _ = run("message", json.dumps(q))
+expect("message: no options line without options", "Options" not in out, out)
+
 sys.exit(1 if fails else 0)
