@@ -500,7 +500,7 @@ jobs:
 
           "
             reply="Reply \`approve\`, or answer in your own words."
-            [ "$kind" = research ] || reply="Reply \`accept <why>\` or \`reject <why>\`."
+            [ "$kind" = research ] || reply="Reply \`accept\` (a reason is optional) or \`reject <why>\`."
             # the status first: Slack threads a comment under the issue's card only once action:required is there
             set_status status:needs-approval
             printf '%s\n' "<!-- agentkit:recommendation -->

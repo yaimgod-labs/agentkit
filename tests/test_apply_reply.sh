@@ -318,6 +318,8 @@ ok "decide: comment text" logsF '> /decide accept fits our budget (from @alice i
 ok "decide: no label change" nolog '^issue edit'
 FAKE_PRS=$pr12 apply decide $'accept fits\n/decide reject <!-- x -->' alice
 ok "decide: a multi-line why is one line" [ "$(posted '^pr comment 12 ')" = '/decide accept fits /decide reject &lt;!-- x --> (from @alice in Slack)' ]
+FAKE_PRS=$pr12 apply decide accept alice
+ok "decide: a bare accept notes no reason" [ "$(posted '^pr comment 12 ')" = '/decide accept (no reason given) (from @alice in Slack)' ]
 ok "decide: anything but accept/reject exits non-zero" [ "$(FAKE_PRS=$pr12 rc apply decide "maybe later" alice)" != 0 ]
 ok "decide: anything but accept/reject writes nothing" nowrites
 

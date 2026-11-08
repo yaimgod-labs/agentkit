@@ -15,7 +15,7 @@ The reply is matched case-insensitively, after strip(), on its first word with t
 keyword valid for the issue's status gives that status's action; `arg` is the rest of the text after the keyword.
 Any other text is free text: the status's free-text action, `arg` the whole body. A keyword that is not valid
 for the status gives `hint` with the keyword as `arg`, and so does a keyword that needs an argument and has none
-(research, block, replace, accept, reject). `replace` takes `#42` or `42`; `arg` is the digits. An empty body
+(research, block, replace, reject). `accept` alone is a decision with no reason given. `replace` takes `#42` or `42`; `arg` is the digits. An empty body
 is `hint` with an empty `arg`. A status the table does not list (and `ready` without `mode:human`) gives
 `none`: the workflow does nothing.
 
@@ -26,7 +26,7 @@ import json
 import re
 import sys
 
-NEEDS_ARG = {"research", "block", "replace", "accept", "reject"}
+NEEDS_ARG = {"research", "block", "replace", "reject"}  # accept is one click: its reason is optional
 
 # (status, kind) -> ({keyword: action}, free-text action)
 TABLE = {
@@ -85,7 +85,7 @@ def match(body, keywords, free):
         m = re.fullmatch(r"#?([1-9][0-9]*)", rest)
         return out("replace", m.group(1)) if m else out("hint", word)
     if keywords[word] == "decide":
-        return out("decide", f"{word} {rest}")
+        return out("decide", f"{word} {rest}".strip())
     return out(keywords[word], rest)
 
 

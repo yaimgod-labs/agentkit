@@ -83,10 +83,11 @@ expect("replace soon is a hint", act("replace soon", *BL) == ("hint", "replace")
 expect("replace #42 and more is a hint", act("replace #42 and #43", *BL) == ("hint", "replace"))
 
 # keywords that need an argument and have none
-for labels, kw in [(NI, "research"), (NH, "block"), (NA_F, "accept"), (NA_F, "reject"), (BL, "replace")]:
+for labels, kw in [(NI, "research"), (NH, "block"), (NA_F, "reject"), (BL, "replace")]:
     expect(f"{kw} without an argument", act(kw, *labels) == ("hint", kw), act(kw, *labels))
 
 # decide: lowercase keyword plus its why
+expect("accept alone", act("accept", *NA_F) == ("decide", "accept"), act("accept", *NA_F))
 expect("decide arg", act("Accept. fits our budget", *NA_F) == ("decide", "accept fits our budget"), act("Accept. fits our budget", *NA_F))
 
 # keywords without an argument keep the rest as arg
