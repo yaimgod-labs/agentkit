@@ -72,6 +72,25 @@ expect("derive: nothing gives nothing", card.derive([]) == (None, []))
 c2 = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": ["status:needs-human"], "comments": [stuck]})
 expect("build uses derived ask and options", "which library?" in c2["text"] and [e["text"]["text"] for e in c2["blocks"][1]["elements"]][:2] == ["Allow web", "Use memory"])
 
+# Verify: needs-verification asks for the unticked items of the kit's latest comment; Verified and Failed… (free text)
+ping = ("agentkit: all checks passed; 2 item(s) under **Human verification** in the PR need a person to check them. "
+        "Reply `verified` when they pass, or say what failed. PR: https://github.com/o/r/pull/12\n\n**Not verified yet:**\n"
+        "- [ ] Open the app on `iOS 17`\n- [ ] Log in with a **new** account\n- [x] already ticked\n\nAnswer with the Comment button")
+NVL = ["status:needs-verification", "action:required"]
+v = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": NVL, "comments": ["<!-- agentkit:card channel=C1 ts=1.2 -->", ping]})
+vb = [(e["text"]["text"], e["value"], e["action_id"].split("_")[0]) for e in v["blocks"][1]["elements"]]
+expect("verify: ask is the unticked items, one line", v["blocks"][0]["text"]["text"].split("\n")[1] == "Open the app on iOS 17 · Log in with a new account", v["blocks"][0]["text"]["text"])
+expect("verify: Verified and Failed…", vb == [("Verified", "o/r#7|verified", "reply"), ("Failed…", "o/r#7|", "modal")], vb)
+expect("verify: within budget", card.lint(v) == [], card.lint(v))
+many_items = ping.replace("- [x] already ticked", "\n".join(f"- [ ] check number {i} of the many things to look at" for i in range(6)))
+vm = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": NVL, "comments": [many_items]})
+vm_ask = vm["blocks"][0]["text"]["text"].split("\n")[1]
+expect("verify: at most 3 items, clipped to the ask budget", vm_ask.count(" · ") <= 2 and len(vm_ask) <= card.ASK_MAX and card.lint(vm) == [], vm_ask)
+v_old = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": NVL, "comments": ["- [ ] an old item", "agentkit: all checks passed; check them."]})
+expect("verify: a latest comment without items gives its first line", "agentkit: all checks passed; check them." in v_old["text"], v_old["text"])
+expect("lint: a free-text modal is not an answer button", card.lint({"blocks": [v["blocks"][0], {"type": "actions", "elements": [
+    {"text": {"text": x}, "value": "o/r#7|" + y} for x, y in [("A", "a"), ("B", "b"), ("C", "c"), ("Failed…", "")]]}]}) == [])
+
 d = card.done({"number": 96, "title": "RFC: where to put shared constants", "url": "https://github.com/o/r/pull/97",
                "body": "## Summary\nI added RFC 0002, `docs/rfcs/0002-shared-constants.md`, in proposed status. It compares four ways.\n\n## Changes\n- x"})
 expect("done card: title, first Summary line, link, no buttons", len(d["blocks"]) == 1 and "✓ RFC: where" in d["text"] and "I added RFC 0002" in d["text"] and "pull/97|#96" in d["blocks"][0]["text"]["text"], d)

@@ -476,10 +476,16 @@ jobs:
             jq -n --argjson pr "$on_pr" --argjson issue "$on_issue" --argjson after "${after:-null}" \
               '{pr: [$pr[].body], issue: $issue, after: $after}' | python3 "$C" decided
           }
+          # the unticked Human verification items of PR $1 (the rule of checklist.sh), one `- [ ]` line each, `<!--` escaped
+          unticked() {
+            gh pr view "$1" --repo "$REPO" --json body --jq .body \
+              | awk '/^#+ /{hv = (tolower($0) ~ /^#+ human verification/); next} hv && /^[[:space:]]*- \[ \]/' \
+              | sed -e 's/^[[:space:]]*//' -e 's/<!--/\&lt;!--/g'
+          }
           # Claude Code + Slack mode: a passing research or RFC PR waits for the person's approval on issue $n,
           # with the doc's recommendation in a comment that starts with the marker apply-reply.sh reads
           ask_approval() {
-            local kind=$1 dir=research doc text rec='' src body unverified reply
+            local kind=$1 dir=research doc text rec='' src unverified reply
             [ "$kind" = research ] || dir=rfcs
             doc=$(grep -E "^docs/$dir/[A-Za-z0-9._-]+\.md$" <<<"$files" | grep -v '/README\.md$' | head -n1 || true)
             # a doc that cannot be read (removed in the PR) gets the fallback line
@@ -490,11 +496,8 @@ jobs:
             # Slack does not link `#n`, so the PR's URL too
             src="PR #$pr ($GITHUB_SERVER_URL/$REPO/pull/$pr)"
             [ -z "$doc" ] || src="\`$doc\` in $src"
-            # unticked Human verification items (the rule of checklist.sh), shown before the person approves
-            body=$(gh pr view "$pr" --repo "$REPO" --json body --jq .body)
-            unverified=$(printf '%s\n' "$body" \
-              | awk '/^#+ /{hv = (tolower($0) ~ /^#+ human verification/); next} hv && /^[[:space:]]*- \[ \]/' \
-              | sed -e 's/^[[:space:]]*//' -e 's/<!--/\&lt;!--/g')
+            # unticked Human verification items, shown before the person approves
+            unverified=$(unticked "$pr")
             [ -z "$unverified" ] || unverified="**Not verified yet:**
           $unverified
 
@@ -539,11 +542,13 @@ jobs:
             fi
             set_status() { .agentkit-kit/scripts/set-status.sh "$REPO" "$n" "$@"; }
             # Claude Code + Slack mode: Slack shows the issue's card, not the PR, so a handover that waits on a person
-            # also says on the issue what is needed, with the PR's link
+            # also says on the issue what is needed, with the PR's link (and $2, a block of lines, after it)
             ping_issue() {
               [ "$AGENTKIT_INTERFACE" = claude-slack ] || return 0
               printf '%s\n' "agentkit: $1 PR: $GITHUB_SERVER_URL/$REPO/pull/$pr
-
+          ${2:+
+          $2
+          }
           Answer with the Comment button on this issue's card in Slack." | gh issue comment "$n" --repo "$REPO" --body-file - >/dev/null
             }
             files=$(gh api --paginate "repos/$REPO/pulls/$pr/files" --jq '.[].filename')
@@ -587,9 +592,13 @@ jobs:
                   if [ "$dec" != true ]; then ask_approval "$kind"; return 0; fi
                 fi
                 if [ "$human" -gt 0 ]; then
+                  # the items, which the Slack card lists, read before any write
+                  local items
+                  items=$(unticked "$pr")
                   set_status status:needs-verification
                   gh pr comment "$pr" --repo "$REPO" --body "agentkit: all checks passed. $human item(s) under **Human verification** need a person: check them (on a device, a staging build or wherever the item says) and tick the boxes in the PR description; ticking the last one approves the PR."
-                  ping_issue "all checks passed; $human item(s) under **Human verification** in the PR need a person to check them. Reply \`verified\` when they pass, or say what failed."
+                  ping_issue "all checks passed; $human item(s) under **Human verification** in the PR need a person to check them. Reply \`verified\` when they pass, or say what failed." "**Not verified yet:**
+          $items"
                   return 0
                 fi
                 set_status status:approved

@@ -7,8 +7,11 @@ Python 3.9+, stdlib only.
       `ask` falls back to "Needs your input". Buttons come from
       reply.py's keyword table for the issue's status: a keyword without an argument is a button, one that needs an
       argument opens a modal (`Name…`), and free text is `Other…`. `options` (agent-written answers) come first.
+      A Verify card (needs-verification) asks for the unticked `- [ ]` items of the kit's latest comment (up to 3,
+      joined by " · ") and has `Verified` and `Failed…` (free text, a failed check) only.
   card.py lint < card-json
-      Exit 1 and a message per breach: title over 80 chars, ask over 160, more than 3 answer buttons, or more than one link.
+      Exit 1 and a message per breach: title over 80 chars, ask over 160, more than 3 answer buttons (the free-text
+      modal is not one), or more than one link.
   card.py done < {"number", "title", "body", "url"}
       A Done card for a merged agent PR (title, the first line of the PR's `## Summary`, link; no buttons), linted and
       posted as `post` does. Prints the message ts.
@@ -36,6 +39,8 @@ import reply  # noqa: E402
 TITLE_MAX, ASK_MAX, BUTTONS_MAX = 80, 160, 3
 FALLBACK_ASK = "Needs your input"
 LABEL = {"approve": "Approve", "accept": "Accept", "verified": "Verified", "retry": "Retry", "unblock": "Unblock", "done": "Done"}
+# a card kind other than Decide shows only some of its status's keywords, and names the free-text modal
+KINDS = {"verify": (["verified"], "Failed…")}
 
 
 def clip(s, n):
@@ -76,24 +81,38 @@ def derive(comments):
     return None, []
 
 
+def unticked(comments):
+    """The unticked `- [ ]` items of the kit's latest comment, plain (a needs-verification ping lists them)."""
+    for body in reversed(comments):
+        if any(plain(l) for l in body.splitlines() if not l.startswith("<!--")):
+            return [plain(m) for m in re.findall(r"^\s*- \[ \] (.+)$", body, re.M)]
+    return []
+
+
 def build(issue):
+    labels = issue.get("labels", [])
+    status = next((l[len("status:"):] for l in labels if l.startswith("status:")), "")
+    kind = "verify" if status == "needs-verification" else "decide"
+    if kind == "verify" and not issue.get("ask") and unticked(issue.get("comments", [])):
+        issue = {**issue, "ask": " · ".join(unticked(issue["comments"])[:3])}
     if "comments" in issue and not issue.get("ask"):
         issue = {**issue, **dict(zip(("ask", "options"), derive(issue["comments"])))}
     repo, n = issue["repo"], issue["number"]
     ref = f"{repo}#{n}"
-    parsed = reply.parse("", issue.get("labels", []))
+    parsed = reply.parse("", labels)
+    shown, other = KINDS.get(kind, (parsed["keywords"], "Other…"))
     # an option is its text, or a (label, text) pair when the text is too long for a button
     pairs = [(o, o) if isinstance(o, str) else tuple(o) for o in issue.get("options") or []]
     buttons = [(clip(label, 40), f"{ref}|{text}"[:2000], "reply") for label, text in pairs][:BUTTONS_MAX]  # Slack: value ≤ 2000
-    for kw in parsed["keywords"]:
+    for kw in [k for k in parsed["keywords"] if k in shown]:
         if len(buttons) >= BUTTONS_MAX:
             break
         if kw in reply.NEEDS_ARG:
             buttons.append((kw.capitalize() + "…", f"{ref}|{kw}", "modal"))
         else:
             buttons.append((LABEL.get(kw, kw.capitalize()), f"{ref}|{kw}", "reply"))
-    if parsed["free_text"]:
-        buttons.append(("Other…", f"{ref}|", "modal"))
+    if parsed["free_text"] and other:
+        buttons.append((other, f"{ref}|", "modal"))
     title = clip(issue["title"], TITLE_MAX)
     ask = clip(issue.get("ask") or FALLBACK_ASK, ASK_MAX)
     url = f"https://github.com/{repo}/issues/{n}"
@@ -117,7 +136,8 @@ def lint(card):
         bad.append(f"title is {len(title)} chars, max {TITLE_MAX}")
     if len(ask) > ASK_MAX:
         bad.append(f"ask is {len(ask)} chars, max {ASK_MAX}")
-    answers = [e for e in (card["blocks"][1]["elements"] if len(card["blocks"]) > 1 else []) if e["text"]["text"] != "Other…"]
+    # the free-text modal (its value ends in "|") is not an answer
+    answers = [e for e in (card["blocks"][1]["elements"] if len(card["blocks"]) > 1 else []) if not e["value"].endswith("|")]
     if len(answers) > BUTTONS_MAX:
         bad.append(f"{len(answers)} answer buttons, max {BUTTONS_MAX}")
     if text.count("<http") > 1:
