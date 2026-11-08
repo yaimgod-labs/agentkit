@@ -47,8 +47,10 @@ def derive(comments):
     Anything else: the first line of the latest comment. Missing: (None, [])."""
     for body in reversed(comments):
         if body.startswith("<!-- agentkit:recommendation -->"):
-            line = next((l for l in body.splitlines()[1:] if plain(l)), "")
-            return plain(line) or None, []
+            lines = [plain(l) for l in body.splitlines()[1:] if plain(l)]
+            # a first line that ends in ":" introduces the next one: "Adopt C: 1. constants live in their module"
+            ask = " ".join(lines[:2]) if lines and lines[0].endswith(":") else (lines[0] if lines else "")
+            return ask or None, []
         m = re.search(r"^\*\*Stuck on:\*\* (.+)$", body, re.M)
         if m:
             o = re.search(r"^\*\*Options:\*\* (.+)$", body, re.M)
