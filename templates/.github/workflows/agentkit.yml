@@ -46,6 +46,7 @@ jobs:
     secrets:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
 
   triage:
     # Claude Code + Slack mode (AGENTKIT_INTERFACE=claude-slack): a new issue by a trusted author refines on its own

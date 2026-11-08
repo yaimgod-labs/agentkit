@@ -31,6 +31,8 @@ on:
         required: true
       SLACK_WEBHOOK_URL:
         required: false
+      SLACK_BOT_TOKEN:
+        required: false
 
 permissions: {}
 
@@ -105,14 +107,22 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           SLACK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_BOT: ${{ vars.AGENTKIT_SLACK_BOT }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ vars.AGENTKIT_CARD_CHANNEL }}
         run: |
           n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
           [ -n "$n" ] || exit 0
           # the status first, so a waiting issue never closes still labelled (Slack would post an extra card)
           .agentkit-kit/scripts/set-status.sh "$REPO" "$n" || true
           gh issue close "$n" --repo "$REPO" --reason completed || true  # already closed when merged into the default branch
+          # Slack bot mode: a short Done card instead of the long message; never fails the step
+          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ "$SLACK_BOT" = true ]; then
+            title=$(gh issue view "$n" --repo "$REPO" --json title --jq .title) || title=$PR_TITLE
+            jq -n --argjson n "$n" --arg t "$title" --arg b "$PR_BODY" --arg u "$PR_URL" '{number: $n, title: $t, body: $b, url: $u}' \
+              | python3 .agentkit-kit/scripts/card.py "done" >/dev/null || echo "::warning::could not post the Done card for #$n"
           # Claude Code + Slack mode: "task done" in the channel (the issue's title, else the PR's); never fails the step
-          if [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -n "$SLACK" ]; then
+          elif [ "$AGENTKIT_INTERFACE" = claude-slack ] && [ -n "$SLACK" ]; then
             title=$(gh issue view "$n" --repo "$REPO" --json title --jq .title) || title=$PR_TITLE
             if text=$(jq -n --argjson n "$n" --arg t "$title" --arg b "$PR_BODY" --arg u "$PR_URL" \
                         '{number: $n, title: $t, body: $b, url: $u}' | python3 .agentkit-kit/scripts/done.py); then

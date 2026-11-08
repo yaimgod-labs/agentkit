@@ -9,6 +9,9 @@ Python 3.9+, stdlib only.
       argument opens a modal (`Name…`), and free text is `Other…`. `options` (agent-written answers) come first.
   card.py lint < card-json
       Exit 1 and a message per breach: title over 80 chars, ask over 160, more than 3 answer buttons, or more than one link.
+  card.py done < {"number", "title", "body", "url"}
+      A Done card for a merged agent PR (title, the first line of the PR's `## Summary`, link; no buttons), linted and
+      posted as `post` does. Prints the message ts.
   card.py post < issue-json
       build + lint, then chat.postMessage to env SLACK_CHANNEL with env SLACK_BOT_TOKEN. Prints the message ts.
 
@@ -104,7 +107,7 @@ def lint(card):
         bad.append(f"title is {len(title)} chars, max {TITLE_MAX}")
     if len(ask) > ASK_MAX:
         bad.append(f"ask is {len(ask)} chars, max {ASK_MAX}")
-    answers = [e for e in card["blocks"][1]["elements"] if e["text"]["text"] != "Other…"]
+    answers = [e for e in (card["blocks"][1]["elements"] if len(card["blocks"]) > 1 else []) if e["text"]["text"] != "Other…"]
     if len(answers) > BUTTONS_MAX:
         bad.append(f"{len(answers)} answer buttons, max {BUTTONS_MAX}")
     if text.count("<http") > 1:
@@ -112,8 +115,23 @@ def lint(card):
     return bad
 
 
+def done(d):
+    """A Done card for a merged agent PR: title, the first line of the PR body's `## Summary`, a link to the PR.
+    No buttons. d = {"number", "title", "body", "url"} (as done.py takes)."""
+    import done as done_text  # the long done message's Summary rule, one definition
+    line = next((plain(l) for l in done_text.summary(d.get("body")).splitlines() if plain(l)), "Merged.")
+    title = clip("✓ " + str(d["title"]), TITLE_MAX)
+    return {"text": f"{title}: {clip(line, ASK_MAX)}",
+            "blocks": [{"type": "section", "text": {"type": "mrkdwn",
+                        "text": f"*{title}*\n{clip(line, ASK_MAX)}\n<{d['url']}|#{d['number']}>"}}]}
+
+
 def post(issue):
-    card = build(issue)
+    return send(build(issue))
+
+
+def send(card):
+    """Lint, then chat.postMessage to env SLACK_CHANNEL with env SLACK_BOT_TOKEN. Returns the message ts."""
     bad = lint(card)
     if bad:
         sys.exit("card.py: " + "; ".join(bad))
@@ -147,5 +165,7 @@ if __name__ == "__main__":
         sys.exit(1 if bad else 0)
     elif cmd == "post":
         print(post(data))
+    elif cmd == "done":
+        print(send(done(data)))
     else:
         sys.exit(__doc__)
