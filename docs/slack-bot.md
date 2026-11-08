@@ -79,7 +79,10 @@ gh secret set SLACK_BOT_TOKEN --repo owner/repo        # the same xoxb- token th
 and run `gh agentkit upgrade owner/repo` so the caller has the `repository_dispatch` trigger and the `reply` and `card`
 jobs. When an issue starts waiting on a person (label `action:required`), the `card` job posts one short card to the
 channel: the question from the agent's `STUCK:` message (with its `options` as buttons), the first line of an RFC or
-research recommendation, or the first line of the kit's latest comment. It waits up to a minute for the kit's explaining
+research recommendation, or the first line of the kit's latest comment. A `needs-verification` issue gets a **Verify**
+card instead: the PR's unticked Human verification items (up to 3), `Verified` and `Failed…` (what failed, sent as a
+failed check). A `needs-human` issue after a failed run (`reason:env` or `reason:agent-error`) gets an **Attention**
+card: one line of why, `Retry`, `Block…` and a `Logs` link to the run. It waits up to a minute for the kit's explaining
 comment to land after the label. When the gate merges an agent PR, the channel gets a short **Done** card (title, the first line of the PR's
 `## Summary`, link; no buttons) instead of the long "task done" message the webhook sends without the bot. The caller's
 `dispatch` job needs the `SLACK_BOT_TOKEN` secret for it. The card job also leaves a hidden marker comment naming the card; when the issue gets a new

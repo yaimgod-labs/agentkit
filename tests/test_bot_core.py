@@ -91,6 +91,29 @@ expect("verify: a latest comment without items gives its first line", "agentkit:
 expect("lint: a free-text modal is not an answer button", card.lint({"blocks": [v["blocks"][0], {"type": "actions", "elements": [
     {"text": {"text": x}, "value": "o/r#7|" + y} for x, y in [("A", "a"), ("B", "b"), ("C", "c"), ("Failed…", "")]]}]}) == [])
 
+# Attention: needs-human after a failed run (reason:env, reason:agent-error): one line of why, Retry, Block…, Logs
+failed = ("agentkit: implement run failed or timed out (https://github.com/o/r/actions/runs/123). Needs a human.\n\n"
+          "Answer with the Comment button on this issue's card in Slack.")
+a = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": ["status:needs-human", "reason:agent-error", "action:required"],
+                "comments": [failed, "<!-- agentkit:card channel=C1 ts=1.2 -->"]})
+ab = a["blocks"][1]["elements"]
+expect("attention: the why without the link", a["blocks"][0]["text"]["text"].split("\n")[1] == "agentkit: implement run failed or timed out. Needs a human.", a["blocks"][0]["text"]["text"])
+expect("attention: Retry, Block…, Logs; no Other…", [e["text"]["text"] for e in ab] == ["Retry", "Block…", "Logs"], ab)
+expect("attention: Retry replies, Block… opens a modal", (ab[0]["value"], ab[1]["value"], ab[1]["action_id"].split("_")[0]) == ("o/r#7|retry", "o/r#7|block", "modal"), ab)
+expect("attention: Logs links the run and has no value", ab[2].get("url") == "https://github.com/o/r/actions/runs/123" and "value" not in ab[2], ab[2])
+expect("attention: within budget", card.lint(a) == [], card.lint(a))
+timeout = ("agentkit: checks lint gave no result after 30 minutes. A person must check that they run for this branch and re-run them. "
+           "Reply `retry` to send it back to the implementer. PR: https://github.com/o/r/pull/12\n\nAnswer with the Comment button")
+a2 = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": ["status:needs-human", "reason:env"], "comments": [timeout]})
+expect("attention: no run link, Logs is the issue", a2["blocks"][1]["elements"][-1]["url"] == "https://github.com/o/r/issues/7", a2["blocks"][1]["elements"][-1])
+expect("attention: no PR link in the ask", "http" not in a2["blocks"][0]["text"]["text"].split("\n")[1] and card.lint(a2) == [], a2["blocks"][0]["text"]["text"])
+nr = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": ["status:needs-human"], "comments": [failed]})
+expect("needs-human without a failure reason stays a Decide card", [e["text"]["text"] for e in nr["blocks"][1]["elements"]] == ["Retry", "Research…", "Block…", "Other…"], nr)
+url_btn = {"type": "button", "text": {"text": "Logs"}, "url": "https://x"}
+three = [{"text": {"text": x}, "value": "o/r#7|" + x} for x in "abc"]
+expect("lint: a link button is not an answer button", card.lint({"blocks": [a["blocks"][0], {"type": "actions", "elements": three + [url_btn]}]}) == [])
+expect("lint: 4 answers and a link button is over", len(card.lint({"blocks": [a["blocks"][0], {"type": "actions", "elements": three + three[:1] + [url_btn]}]})) == 1)
+
 d = card.done({"number": 96, "title": "RFC: where to put shared constants", "url": "https://github.com/o/r/pull/97",
                "body": "## Summary\nI added RFC 0002, `docs/rfcs/0002-shared-constants.md`, in proposed status. It compares four ways.\n\n## Changes\n- x"})
 expect("done card: title, first Summary line, link, no buttons", len(d["blocks"]) == 1 and "✓ RFC: where" in d["text"] and "I added RFC 0002" in d["text"] and "pull/97|#96" in d["blocks"][0]["text"]["text"], d)

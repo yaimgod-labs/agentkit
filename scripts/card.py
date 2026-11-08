@@ -8,10 +8,12 @@ Python 3.9+, stdlib only.
       reply.py's keyword table for the issue's status: a keyword without an argument is a button, one that needs an
       argument opens a modal (`Name…`), and free text is `Other…`. `options` (agent-written answers) come first.
       A Verify card (needs-verification) asks for the unticked `- [ ]` items of the kit's latest comment (up to 3,
-      joined by " · ") and has `Verified` and `Failed…` (free text, a failed check) only.
+      joined by " · ") and has `Verified` and `Failed…` (free text, a failed check) only. An Attention card
+      (needs-human with reason:env or reason:agent-error: a failed run) asks the why without its links and has `Retry`,
+      `Block…` and a `Logs` link button (the run in the kit's latest comment, else the issue).
   card.py lint < card-json
       Exit 1 and a message per breach: title over 80 chars, ask over 160, more than 3 answer buttons (the free-text
-      modal is not one), or more than one link.
+      modal and a link button are not), or more than one link in the text.
   card.py done < {"number", "title", "body", "url"}
       A Done card for a merged agent PR (title, the first line of the PR's `## Summary`, link; no buttons), linted and
       posted as `post` does. Prints the message ts.
@@ -40,7 +42,8 @@ TITLE_MAX, ASK_MAX, BUTTONS_MAX = 80, 160, 3
 FALLBACK_ASK = "Needs your input"
 LABEL = {"approve": "Approve", "accept": "Accept", "verified": "Verified", "retry": "Retry", "unblock": "Unblock", "done": "Done"}
 # a card kind other than Decide shows only some of its status's keywords, and names the free-text modal
-KINDS = {"verify": (["verified"], "Failed…")}
+KINDS = {"verify": (["verified"], "Failed…"), "attention": (["retry", "block"], None)}
+FAILED = {"reason:env", "reason:agent-error"}  # the kit's handover after a failed run or step: an Attention card
 
 
 def clip(s, n):
@@ -81,24 +84,35 @@ def derive(comments):
     return None, []
 
 
+def latest(comments):
+    """The kit's latest comment with visible text (a card marker has none), or ""."""
+    return next((b for b in reversed(comments) if any(plain(l) for l in b.splitlines() if not l.startswith("<!--"))), "")
+
+
 def unticked(comments):
     """The unticked `- [ ]` items of the kit's latest comment, plain (a needs-verification ping lists them)."""
-    for body in reversed(comments):
-        if any(plain(l) for l in body.splitlines() if not l.startswith("<!--")):
-            return [plain(m) for m in re.findall(r"^\s*- \[ \] (.+)$", body, re.M)]
-    return []
+    return [plain(m) for m in re.findall(r"^\s*- \[ \] (.+)$", latest(comments), re.M)]
 
 
 def build(issue):
     labels = issue.get("labels", [])
     status = next((l[len("status:"):] for l in labels if l.startswith("status:")), "")
-    kind = "verify" if status == "needs-verification" else "decide"
-    if kind == "verify" and not issue.get("ask") and unticked(issue.get("comments", [])):
-        issue = {**issue, "ask": " · ".join(unticked(issue["comments"])[:3])}
+    kind = ("verify" if status == "needs-verification" else
+            "attention" if status == "needs-human" and FAILED & set(labels) else "decide")
+    items = unticked(issue.get("comments", [])) if kind == "verify" else []
+    if items and not issue.get("ask"):
+        issue = {**issue, "ask": " · ".join(items[:3])}
     if "comments" in issue and not issue.get("ask"):
         issue = {**issue, **dict(zip(("ask", "options"), derive(issue["comments"])))}
     repo, n = issue["repo"], issue["number"]
     ref = f"{repo}#{n}"
+    url = f"https://github.com/{repo}/issues/{n}"
+    links = []
+    if kind == "attention":  # the why without its links; the run's link is the Logs button (else the issue's)
+        issue = {**issue, "ask": re.sub(r"\s*(?:PR: )?\(?https?://[^\s)]+\)?", "", issue.get("ask") or "")}
+        run = re.search(r"https://\S+?/actions/runs/[0-9]+", latest(issue.get("comments", [])))
+        links = [{"type": "button", "text": {"type": "plain_text", "text": "Logs"}, "action_id": "logs",
+                  "url": run.group(0) if run else url}]
     parsed = reply.parse("", labels)
     shown, other = KINDS.get(kind, (parsed["keywords"], "Other…"))
     # an option is its text, or a (label, text) pair when the text is too long for a button
@@ -115,15 +129,14 @@ def build(issue):
         buttons.append((other, f"{ref}|", "modal"))
     title = clip(issue["title"], TITLE_MAX)
     ask = clip(issue.get("ask") or FALLBACK_ASK, ASK_MAX)
-    url = f"https://github.com/{repo}/issues/{n}"
     return {
         "text": f"{title}: {ask}",
         "blocks": [
             {"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*\n{ask}\n<{url}|#{n}>"}},
             {"type": "actions", "elements": [
-                {"type": "button", "text": {"type": "plain_text", "text": label}, "action_id": f"{kind}_{i}", "value": value}
-                for i, (label, value, kind) in enumerate(buttons)
-            ]},
+                {"type": "button", "text": {"type": "plain_text", "text": label}, "action_id": f"{how}_{i}", "value": value}
+                for i, (label, value, how) in enumerate(buttons)
+            ] + links},
         ],
     }
 
@@ -136,8 +149,8 @@ def lint(card):
         bad.append(f"title is {len(title)} chars, max {TITLE_MAX}")
     if len(ask) > ASK_MAX:
         bad.append(f"ask is {len(ask)} chars, max {ASK_MAX}")
-    # the free-text modal (its value ends in "|") is not an answer
-    answers = [e for e in (card["blocks"][1]["elements"] if len(card["blocks"]) > 1 else []) if not e["value"].endswith("|")]
+    # the free-text modal (its value ends in "|") and a link button (no value) are not answers
+    answers = [e for e in (card["blocks"][1]["elements"] if len(card["blocks"]) > 1 else []) if not e.get("value", "|").endswith("|")]
     if len(answers) > BUTTONS_MAX:
         bad.append(f"{len(answers)} answer buttons, max {BUTTONS_MAX}")
     if text.count("<http") > 1:
