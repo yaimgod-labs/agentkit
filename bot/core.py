@@ -202,7 +202,8 @@ def task(repo, title, body, login):
 
 # --- Nudges --------------------------------------------------------------------------------------------------------
 
-NUDGE_DEFAULTS = {"nudges": True, "hours": "09-20", "tz": "UTC", "per_day": 2}
+# the user-scope keys of the kit's settings registry (config/settings.json), with its defaults
+NUDGE_DEFAULTS = {"nudge": "on", "nudge-hours": "09-20", "timezone": "UTC", "nudges-per-day": 2}
 NUDGE_PER_DAY_MAX = 2
 NUDGE_GAP = timedelta(hours=4)
 HISTORY_KEEP = timedelta(days=2)
@@ -226,21 +227,22 @@ def zone(name):
 
 def due(prefs, history, now, count):
     """Whether a person with `count` waiting items gets a nudge at `now` (an aware datetime).
-    prefs = {"nudges": bool, "hours": "09-20", "tz": "Europe/Berlin", "per_day": 2}; a missing or bad value takes the
-    default. history = {"sent": [ISO times]}. Only inside the hours, in the person's timezone; at most per_day (never
+    prefs = {"nudge": "on"|"off", "nudge-hours": "09-20", "timezone": "Europe/Berlin", "nudges-per-day": 2} (the
+    settings registry's keys); a missing or bad value takes the default, and only "off" turns nudges off.
+    history = {"sent": [ISO times]}. Only inside the hours, in the person's timezone; at most nudges-per-day (never
     more than 2) in their local day; never twice within 4 hours."""
     p = {**NUDGE_DEFAULTS, **(prefs or {})}
-    if count <= 0 or p["nudges"] is not True:
+    if count <= 0 or p["nudge"] == "off":
         return False
     try:
-        start, end = parse_hours(p["hours"])
+        start, end = parse_hours(p["nudge-hours"])
     except ValueError:
-        start, end = parse_hours(NUDGE_DEFAULTS["hours"])
-    tz = zone(p["tz"])
+        start, end = parse_hours(NUDGE_DEFAULTS["nudge-hours"])
+    tz = zone(p["timezone"])
     local = now.astimezone(tz)
     if not start <= local.hour < end:
         return False
-    per_day = p["per_day"] if type(p["per_day"]) is int else NUDGE_DEFAULTS["per_day"]
+    per_day = p["nudges-per-day"] if type(p["nudges-per-day"]) is int else NUDGE_DEFAULTS["nudges-per-day"]
     sent = [datetime.fromisoformat(t) for t in (history or {}).get("sent", [])]
     if sum(t.astimezone(tz).date() == local.date() for t in sent) >= min(per_day, NUDGE_PER_DAY_MAX):
         return False

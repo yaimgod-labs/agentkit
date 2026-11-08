@@ -1,0 +1,8 @@
+# the build context is the kit's root (see bot/Dockerfile): send only what the image copies
+*
+!bot/requirements.txt
+!bot/core.py
+!bot/app.py
+!scripts/card.py
+!scripts/reply.py
+!plugins/agentkit/scripts/board.py
