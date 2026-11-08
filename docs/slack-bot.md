@@ -68,16 +68,25 @@ Secret files must be readable by uid 10001. Never enable debug logging for Bolt 
 
 ## Turn it on for a repo
 
-On top of `AGENTKIT_INTERFACE=claude-slack`, set on the repo:
-
 ```
-gh variable set AGENTKIT_SLACK_BOT --repo owner/repo --body true
-gh variable set AGENTKIT_CARD_CHANNEL --repo owner/repo --body C0123456789
-gh secret set SLACK_BOT_TOKEN --repo owner/repo        # the same xoxb- token the bot uses
+gh agentkit upgrade owner/repo --interface slack-bot --card-channel C0123456789   # also on setup and init
+gh secret set SLACK_BOT_TOKEN --repo owner/repo        # the same xoxb- token the bot uses (input hidden)
 ```
 
-and run `gh agentkit upgrade owner/repo` so the caller has the `repository_dispatch` trigger and the `reply` and `card`
-jobs. When an issue starts waiting on a person (label `action:required`), the `card` job posts one short card to the
+`--interface slack-bot` is the Claude Code + Slack mode (`AGENTKIT_INTERFACE=claude-slack`, `AUTO_MERGE=true`) plus
+`AGENTKIT_SLACK_BOT=true` and `AGENTKIT_CARD_CHANNEL`. The channel id is at the bottom of the channel's details (`C…`, or
+`G…` for an old private channel); without `--card-channel` the value already set is kept, or you are asked for it. The
+CLI never reads the token: it prints the `gh secret set` line for you to run. Merge the upgrade PR, so the caller has the
+`repository_dispatch` trigger and the `reply` and `card` jobs, then check with `gh agentkit doctor owner/repo`.
+
+With the bot on, `doctor` checks the variables, the `SLACK_BOT_TOKEN` secret (by name) and the caller. Export
+`SLACK_BOT_TOKEN` in your shell first and it also asks Slack: `auth.test` (the token works) and `conversations.info` (the
+channel exists and the bot is in it). That second call needs `channels:read` (`groups:read` for a private channel),
+which the bot does not otherwise need; without it `doctor` says it can't check and carries on. Two things it cannot
+check: whether the bot server is connected (Slack has no API for a Socket Mode connection; look at the container's log)
+and the server's `users.json`.
+
+When an issue starts waiting on a person (label `action:required`), the `card` job posts one short card to the
 channel: the question from the agent's `STUCK:` message (with its `options` as buttons), the first line of an RFC or
 research recommendation, or the first line of the kit's latest comment. It waits up to a minute for the kit's explaining
 comment to land after the label. When the gate merges an agent PR, the channel gets a short **Done** card (title, the first line of the PR's
