@@ -52,7 +52,20 @@ stuck = "**Stuck on:** which `library`?\n**Why I can't decide alone:** w\n**Chec
 expect("derive: stuck message gives ask and options", card.derive(["x", stuck]) == ("which library?", ["Allow web", "Use memory"]))
 expect("derive: recommendation gives its first line", card.derive(["<!-- agentkit:recommendation -->\n> Adopt **option A**: one file per module.\n>\n> Reasons"]) == ("Adopt option A: one file per module.", []))
 expect("derive: any other comment gives its first line", card.derive(["<!-- m -->\nagentkit: all checks passed; 1 item needs a person."]) == ("agentkit: all checks passed; 1 item needs a person.", []))
+expect("derive: a recommendation line ending in : takes the next line", card.derive(["<!-- agentkit:recommendation -->\n> Adopt **C**:\n>\n> 1. Keep each constant in its module.\n> 2. More"]) == ("Adopt C: 1. Keep each constant in its module.", []))
 expect("derive: nothing gives nothing", card.derive([]) == (None, []))
 c2 = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": ["status:needs-human"], "comments": [stuck]})
 expect("build uses derived ask and options", "which library?" in c2["text"] and [e["text"]["text"] for e in c2["blocks"][1]["elements"]][:2] == ["Allow web", "Use memory"])
+
+# post: a network error is retried, Slack's answer is used
+import io, os, urllib.error
+os.environ.update(SLACK_CHANNEL="C1", SLACK_BOT_TOKEN="x")
+calls = []
+def flaky(req, timeout):
+    calls.append(1)
+    if len(calls) < 3:
+        raise urllib.error.URLError("Temporary failure in name resolution")
+    return io.BytesIO(b'{"ok": true, "ts": "1.2"}')
+card.urllib.request.urlopen, card.time.sleep = flaky, lambda s: None
+expect("post retries a network error", card.post({"repo": "o/r", "number": 1, "title": "t", "labels": ["status:needs-info"]}) == "1.2" and len(calls) == 3)
 sys.exit(1 if fails else 0)

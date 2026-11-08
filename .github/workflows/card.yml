@@ -52,7 +52,7 @@ jobs:
       - name: Post the card
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-          BOT: ${{ steps.app.outputs.app-slug }}[bot]
+          SLUG: ${{ steps.app.outputs.app-slug }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL: ${{ vars.AGENTKIT_CARD_CHANNEL }}
         run: |
@@ -64,13 +64,14 @@ jobs:
           since=$(gh issue view "$N" --repo "$REPO" --json updatedAt --jq .updatedAt)
           for _ in 1 2 3 4 5 6; do
             issue=$(gh issue view "$N" --repo "$REPO" --json state,title,labels,comments)
-            newest=$(BOT="$BOT" jq -r '[.comments[] | select(.author.login == env.BOT) | .createdAt] | max // ""' <<<"$issue")
+            newest=$(jq -r --arg slug "$SLUG" '[.comments[] | select(.author.login == $slug or .author.login == $slug + "[bot]") | .createdAt] | max // ""' <<<"$issue")
             [[ -n $newest && ! $newest < $since ]] && break
             sleep 10
           done
           [ "$(jq -r .state <<<"$issue")" = OPEN ] || { echo "#$N is closed; no card"; exit 0; }
           jq -e '[.labels[].name] | index("action:required")' <<<"$issue" >/dev/null || { echo "#$N no longer waits; no card"; exit 0; }
           # only the kit's own comments say what the issue needs; a person's or an agent-as-user's text never becomes the ask
-          jq -c --arg repo "$REPO" --argjson n "$N" --arg bot "$BOT" \
-            '{repo: $repo, number: $n, title, labels: [.labels[].name], comments: [.comments[] | select(.author.login == $bot) | .body]}' <<<"$issue" \
+          # (gh issue view names an App by its slug, without the [bot] suffix the REST API adds)
+          jq -c --arg repo "$REPO" --argjson n "$N" --arg slug "$SLUG" \
+            '{repo: $repo, number: $n, title, labels: [.labels[].name], comments: [.comments[] | select(.author.login == $slug or .author.login == $slug + "[bot]") | .body]}' <<<"$issue" \
             | python3 .agentkit-kit/scripts/card.py post
