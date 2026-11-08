@@ -54,7 +54,16 @@ expect("derive: recommendation gives its first line", card.derive(["<!-- agentki
 expect("derive: any other comment gives its first line", card.derive(["<!-- m -->\nagentkit: all checks passed; 1 item needs a person."]) == ("agentkit: all checks passed; 1 item needs a person.", []))
 expect("derive: a recommendation line ending in : takes the next line", card.derive(["<!-- agentkit:recommendation -->\n> Adopt **C**:\n>\n> 1. Keep each constant in its module.\n> 2. More"]) == ("Adopt C: 1. Keep each constant in its module.", []))
 refine = "## Plan\n- do x\n\n## Questions\n1. Should `negate` throw for non-numbers? — default if unanswered: no check.\n2. Other?\n\nReply with an answer"
-expect("derive: refine questions give the first question", card.derive([refine]) == ("Should negate throw for non-numbers?", []), card.derive([refine]))
+expect("derive: refine questions give the first question", card.derive([refine]) == ("Should negate throw for non-numbers?", [("Use the default", "Use the default: no check.")]), card.derive([refine]))
+stuck_q = ("## Questions\n1. **Stuck on:** The greeting format. **Why:** a product choice. **Checked:** docs. "
+           "Default if unanswered: `greet(name)` returns `Hello, ${name}!`.\n\nReply with an answer")
+expect("derive: refine's Stuck on question, its default a one-click answer", card.derive([stuck_q]) ==
+       ("The greeting format.", [("Use the default", "Use the default: greet(name) returns Hello, ${name}!.")]), card.derive([stuck_q]))
+expect("derive: a question without a default has no options", card.derive(["## Questions\n1. Which colour?\n"]) == ("Which colour?", []))
+c = card.build({"repo": "o/r", "number": 9, "title": "t", "labels": ["status:needs-info"], "comments": [stuck_q]})
+expect("build: a (label, text) option is a labelled button that sends its text",
+       (c["blocks"][1]["elements"][0]["text"]["text"], c["blocks"][1]["elements"][0]["value"]) ==
+       ("Use the default", "o/r#9|Use the default: greet(name) returns Hello, ${name}!."), c["blocks"][1]["elements"][0])
 expect("derive: nothing gives nothing", card.derive([]) == (None, []))
 c2 = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": ["status:needs-human"], "comments": [stuck]})
 expect("build uses derived ask and options", "which library?" in c2["text"] and [e["text"]["text"] for e in c2["blocks"][1]["elements"]][:2] == ["Allow web", "Use memory"])

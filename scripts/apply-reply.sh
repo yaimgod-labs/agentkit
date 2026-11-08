@@ -20,7 +20,7 @@
 #                       recommendation and status:refining
 #   override-research <t>  unlinks the research from its parent, closes its PR and the issue (not planned), the parent
 #                       gets the answer and status:refining
-#   decide <accept|reject why>  a /decide comment on the RFC PR
+#   decide <accept [why]|reject why>  a /decide comment on the RFC PR (a bare accept notes no reason given)
 #   approve-split       a /plan comment
 #   done                clears its status, then closes the issue as completed
 #   hint [word]         a comment listing the valid keywords; no label change
@@ -211,7 +211,7 @@ $qarg"
     status "$p" status:refining ;;
 
   decide)
-    case "$larg" in "accept "?* | "reject "?*) ;; *) usage "decide needs 'accept <why>' or 'reject <why>'" ;; esac
+    case "$larg" in accept) larg="accept (no reason given)" ;; "accept "?* | "reject "?*) ;; *) usage "decide needs 'accept [why]' or 'reject <why>'" ;; esac
     pr=$(agent_pr)
     [ -n "$pr" ] || { comment "$n" "agentkit: no open PR for #$n to decide on."; exit 0; }
     pr_comment "$pr" "/decide $larg (from @$login in Slack)" ;;

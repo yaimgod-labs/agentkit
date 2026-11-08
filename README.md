@@ -121,7 +121,7 @@ and `gh secret set SLACK_WEBHOOK_URL --repo <owner/repo>` for the done message, 
 | `needs-human` | `retry`, `research <q>`, `block <reason>` | guidance; the implementer re-runs with it (with no agent PR yet, `retry` and guidance go back to refine) |
 | `needs-verification` | `verified`, `block <reason>` | a failed check; the PR goes back to the implementer |
 | `needs-approval`, research | `approve`, `block <reason>` | your own answer; it wins over the recommendation |
-| `needs-approval`, RFC | `accept <why>`, `reject <why>`, `block <reason>` | none (a hint) |
+| `needs-approval`, RFC | `accept [why]` (the record notes when no reason is given), `reject <why>`, `block <reason>` | none (a hint) |
 | `needs-approval`, split | `approve`, `block <reason>` | feedback; the split is proposed again |
 | `blocked` | `unblock`, `replace #N` | none (a hint) |
 | `ready` with `mode:human` | `done`, `block <reason>` | none (a hint) |

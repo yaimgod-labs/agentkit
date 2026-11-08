@@ -51,7 +51,8 @@ def plain(line):
 def derive(comments):
     """(ask, options) from the kit's comments on a waiting issue, oldest first: the latest one that says what it
     needs. A STUCK message: its `Stuck on` and `Options` lines. An RFC or research recommendation: its first line.
-    Refine's `## Questions`: the first question.
+    Refine's `## Questions`: the first question's `Stuck on` text, with a "Use the default" option when it names a
+    default. An option is a string or a (label, text) pair.
     Anything else: the first line of the latest comment. Missing: (None, [])."""
     for body in reversed(comments):
         if body.startswith("<!-- agentkit:recommendation -->"):
@@ -64,8 +65,11 @@ def derive(comments):
             o = re.search(r"^\*\*Options:\*\* (.+)$", body, re.M)
             return plain(m.group(1)), [x.strip() for x in o.group(1).split(" | ")][:BUTTONS_MAX] if o else []
         q = re.search(r"^## Questions\s*\n+\s*(?:1\.|-)\s*(.+)$", body, re.M)
-        if q:  # refine's open questions: the first one, without its "default if unanswered" tail
-            return plain(re.split(r"\s+—\s+default if unanswered", q.group(1))[0]), []
+        if q:  # refine's open questions: the first one's "Stuck on" part; its default, if any, is a one-click answer
+            text, *default = re.split(r"\s*—?\s*default if unanswered:?\s*", q.group(1), maxsplit=1, flags=re.I)
+            ask = re.split(r"\*\*(?:Why|Checked):\*\*", re.sub(r"^\*\*Stuck on:\*\*\s*", "", text))[0]
+            default = plain(default[0]) if default else ""
+            return plain(ask), [("Use the default", f"Use the default: {default}")] if default else []
         line = next((l for l in body.splitlines() if plain(l) and not l.startswith("<!--")), "")
         if plain(line):
             return plain(line), []
@@ -78,7 +82,9 @@ def build(issue):
     repo, n = issue["repo"], issue["number"]
     ref = f"{repo}#{n}"
     parsed = reply.parse("", issue.get("labels", []))
-    buttons = [(clip(o, 40), f"{ref}|{o}", "reply") for o in issue.get("options") or []][:BUTTONS_MAX]
+    # an option is its text, or a (label, text) pair when the text is too long for a button
+    pairs = [(o, o) if isinstance(o, str) else tuple(o) for o in issue.get("options") or []]
+    buttons = [(clip(label, 40), f"{ref}|{text}"[:2000], "reply") for label, text in pairs][:BUTTONS_MAX]  # Slack: value ≤ 2000
     for kw in parsed["keywords"]:
         if len(buttons) >= BUTTONS_MAX:
             break
