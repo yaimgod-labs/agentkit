@@ -57,6 +57,13 @@ secrets:
   slack_app_token: {file: /srv/agentkit-bot/slack_app_token}
 ```
 
+**Prebuilt image.** `.github/workflows/bot-image.yml` builds the image on a GitHub-hosted runner, scans it with Trivy
+(a fixable HIGH or CRITICAL finding fails the run), and on `main` pushes it to
+`ghcr.io/<owner>/<repo>-bot` with a build-provenance attestation. Instead of `build: ./bot`, a server can use
+`image: ghcr.io/<owner>/<repo>-bot@sha256:<digest>` and check it first with
+`gh attestation verify oci://ghcr.io/<owner>/<repo>-bot@sha256:<digest> --repo <owner>/<repo>`. The first push creates a
+private package: make it public, or log the server in to GHCR. Until the first run on `main`, build the image on the server.
+
 Secret files must be readable by uid 10001. Never enable debug logging for Bolt or the Slack SDK: it logs payloads.
 
 ## Post a card (slice 1, by hand)

@@ -7,6 +7,8 @@ root = Path(__file__).resolve().parent.parent
 grant = {"contents: read"}
 bad = []
 for wf in sorted((root / ".github/workflows").glob("*.yml")):
+    if "workflow_call:" not in wf.read_text():  # only reusable workflows are bound by the caller's grant
+        continue
     lines = wf.read_text().splitlines()
     for i, line in enumerate(lines):
         if re.match(r"^    permissions:\s*$", line):
