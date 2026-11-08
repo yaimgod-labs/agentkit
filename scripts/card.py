@@ -18,6 +18,8 @@ import json
 import os
 import re
 import sys
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -114,7 +116,15 @@ def post(issue):
         data=json.dumps({"channel": os.environ["SLACK_CHANNEL"], **card}).encode(),
         headers={"Authorization": "Bearer " + os.environ["SLACK_BOT_TOKEN"], "Content-Type": "application/json; charset=utf-8"},
     )
-    res = json.load(urllib.request.urlopen(req, timeout=20))
+    # a network error (DNS, timeout, reset) is tried again; Slack's own answer is not
+    for attempt in range(5):
+        try:
+            res = json.load(urllib.request.urlopen(req, timeout=20))
+            break
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            if attempt == 4:
+                sys.exit(f"card.py: Slack unreachable: {e}")
+            time.sleep(10)
     if not res.get("ok"):
         sys.exit("card.py: Slack said " + str(res.get("error")))
     return res["ts"]

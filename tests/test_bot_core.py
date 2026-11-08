@@ -55,4 +55,16 @@ expect("derive: any other comment gives its first line", card.derive(["<!-- m --
 expect("derive: nothing gives nothing", card.derive([]) == (None, []))
 c2 = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": ["status:needs-human"], "comments": [stuck]})
 expect("build uses derived ask and options", "which library?" in c2["text"] and [e["text"]["text"] for e in c2["blocks"][1]["elements"]][:2] == ["Allow web", "Use memory"])
+
+# post: a network error is retried, Slack's answer is used
+import io, os, urllib.error
+os.environ.update(SLACK_CHANNEL="C1", SLACK_BOT_TOKEN="x")
+calls = []
+def flaky(req, timeout):
+    calls.append(1)
+    if len(calls) < 3:
+        raise urllib.error.URLError("Temporary failure in name resolution")
+    return io.BytesIO(b'{"ok": true, "ts": "1.2"}')
+card.urllib.request.urlopen, card.time.sleep = flaky, lambda s: None
+expect("post retries a network error", card.post({"repo": "o/r", "number": 1, "title": "t", "labels": ["status:needs-info"]}) == "1.2" and len(calls) == 3)
 sys.exit(1 if fails else 0)
