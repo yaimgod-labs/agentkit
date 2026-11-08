@@ -96,4 +96,40 @@ check "bot: secret never set or echoed" "[ ! -e '$tmp/secret-calls' ] && ! grep 
 : >"$tmp/bvars"; out=$(enable_interface o/r claude-slack "")
 check "claude-slack leaves the bot variables alone" "! grep -q 'SLACK_BOT\|CARD_CHANNEL' '$tmp/bvars'"
 
+# doctor's bot checks: only with AGENTKIT_SLACK_BOT=true
+bot_caller=$(sed -e 's#your-org/agentkit#x/agentkit#g' "$KIT/templates/.github/workflows/agentkit.yml")
+var_get() { case $2 in AGENTKIT_SLACK_BOT) echo "$BOT" ;; AGENTKIT_INTERFACE) echo "$IFACE" ;; AGENTKIT_CARD_CHANNEL) echo "$CHAN" ;; esac; }
+curl() { cat >"$tmp/curl-config"; echo "$*" >>"$tmp/curl-calls"; case "$*" in *auth.test*) echo "$AUTH" ;; *conversations.info*) echo "$CONV" ;; esac; }
+BOT="" IFACE=claude-slack CHAN=""; out=$(doctor_bot o/r "" ""; true)
+check "doctor bot silent with the bot off" "[ -z \"\$out\" ]"
+BOT=true IFACE="" CHAN=""; out=$(unset SLACK_BOT_TOKEN; doctor_bot o/r "" "name: agentkit" 2>&1)
+check "doctor bot fails without the interface" "grep -q 'FAIL  .*AGENTKIT_INTERFACE.*gh agentkit upgrade o/r --interface slack-bot' <<<\"\$out\""
+check "doctor bot fails without the channel" "grep -q 'FAIL  .*AGENTKIT_CARD_CHANNEL.*--card-channel' <<<\"\$out\""
+check "doctor bot fails without the secret" "grep -q 'FAIL  .*SLACK_BOT_TOKEN.*gh secret set SLACK_BOT_TOKEN --repo o/r' <<<\"\$out\""
+check "doctor bot flags the missing trigger" "grep -qE '(FAIL|warn)  .*repository_dispatch' <<<\"\$out\""
+check "doctor bot flags the missing card job" "grep -qE '(FAIL|warn)  .*card job' <<<\"\$out\""
+check "doctor bot flags dispatch without the token" "grep -qE '(FAIL|warn)  .*dispatch job' <<<\"\$out\""
+check "doctor bot skips live checks without a local token" "[ ! -e '$tmp/curl-calls' ] && grep -q 'SLACK_BOT_TOKEN' <<<\"\$out\""
+BOT=true CHAN=general; out=$(unset SLACK_BOT_TOKEN; doctor_bot o/r SLACK_BOT_TOKEN "$bot_caller" 2>&1)
+check "doctor bot fails on a malformed channel" "grep -q 'FAIL  .*AGENTKIT_CARD_CHANNEL' <<<\"\$out\""
+BOT=true IFACE=claude-slack CHAN=C0123ABC; out=$(unset SLACK_BOT_TOKEN; doctor_bot o/r SLACK_BOT_TOKEN "$bot_caller" 2>&1)
+check "doctor bot clean when set up" "! grep -qE 'FAIL|warn' <<<\"\$out\""
+AUTH='{"ok":true,"user":"agentkit","team":"Acme"}' CONV='{"ok":true,"channel":{"name":"agentkit-cards","is_member":true}}'
+out=$(SLACK_BOT_TOKEN=xoxb-secret-value doctor_bot o/r SLACK_BOT_TOKEN "$bot_caller" 2>&1)
+check "doctor bot live: token and channel ok" "grep -q 'ok    .*auth.test' <<<\"\$out\" && grep -q 'ok    .*agentkit-cards' <<<\"\$out\" && ! grep -qE 'FAIL|warn' <<<\"\$out\""
+check "doctor bot live: token only in curl's stdin config" "! grep -q xoxb-secret-value '$tmp/curl-calls' && grep -q xoxb-secret-value '$tmp/curl-config' && ! grep -q xoxb-secret-value <<<\"\$out\""
+check "doctor bot live: channel id sent" "grep -q 'channel=C0123ABC' '$tmp/curl-calls'"
+CONV='{"ok":true,"channel":{"name":"agentkit-cards","is_member":false}}'
+out=$(SLACK_BOT_TOKEN=x doctor_bot o/r SLACK_BOT_TOKEN "$bot_caller" 2>&1)
+check "doctor bot live: warns when the bot is not in the channel" "grep -q 'warn  .*not in #agentkit-cards' <<<\"\$out\""
+CONV='{"ok":false,"error":"missing_scope","needed":"channels:read"}'
+out=$(SLACK_BOT_TOKEN=x doctor_bot o/r SLACK_BOT_TOKEN "$bot_caller" 2>&1)
+check "doctor bot live: missing scope is a can't-check, not a failure" "grep -q \"can't check.*needs channels:read\" <<<\"\$out\" && ! grep -q FAIL <<<\"\$out\""
+CONV='{"ok":false,"error":"channel_not_found"}'
+out=$(SLACK_BOT_TOKEN=x doctor_bot o/r SLACK_BOT_TOKEN "$bot_caller" 2>&1)
+check "doctor bot live: unknown channel fails" "grep -q 'FAIL  .*channel_not_found' <<<\"\$out\""
+AUTH='{"ok":false,"error":"invalid_auth"}'
+out=$(SLACK_BOT_TOKEN=x doctor_bot o/r SLACK_BOT_TOKEN "$bot_caller" 2>&1)
+check "doctor bot live: bad token fails" "grep -q 'FAIL  .*invalid_auth' <<<\"\$out\""
+unset -f curl
 exit $fail

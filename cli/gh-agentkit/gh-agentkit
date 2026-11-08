@@ -76,6 +76,7 @@ gh agentkit <command>
                               AGENTKIT_CARD_CHANNEL, prints the command that stores the SLACK_BOT_TOKEN secret
   --card-channel C…           the Slack channel id the cards go to (asked for when unset and not given)
   doctor <owner/repo>         verify everything; non-zero exit on failure
+                              (with the bot on and SLACK_BOT_TOKEN in your shell: also checks the token and channel)
 EOF
 }
 
@@ -403,6 +404,61 @@ doctor_interface() {
   echo "        Slack mode: run /github signin in the channel once, then the subscribe lines (gh agentkit upgrade $1 --interface claude-slack prints them)"
 }
 
+# the Slack bot's requirements, only where AGENTKIT_SLACK_BOT=true; ok/bad/warn come from cmd_doctor
+# args: repo, the secret names, the caller workflow's text (on the default branch)
+# With SLACK_BOT_TOKEN in the local environment, also asks Slack; the token goes to curl on stdin, never in argv.
+# The bot server's own connection cannot be checked from here (Slack has no API for it).
+doctor_bot() {
+  [ "$(var_get "$1" AGENTKIT_SLACK_BOT)" = true ] || return 0
+  local repo=$1 fix="gh agentkit upgrade $1 --interface slack-bot"
+  [ "$(var_get "$repo" AGENTKIT_INTERFACE)" = claude-slack ] \
+    && ok "AGENTKIT_INTERFACE=claude-slack (the Slack bot needs it)" \
+    || bad "AGENTKIT_SLACK_BOT=true but AGENTKIT_INTERFACE is not claude-slack ($fix)"
+  local chan; chan=$(var_get "$repo" AGENTKIT_CARD_CHANNEL)
+  if [ -z "$chan" ]; then bad "variable AGENTKIT_CARD_CHANNEL missing: cards have nowhere to go ($fix --card-channel C0123456789)"
+  elif valid_channel "$chan"; then ok "variable AGENTKIT_CARD_CHANNEL ($chan)"
+  else bad "variable AGENTKIT_CARD_CHANNEL '$chan' is not a channel id, C… or G… ($fix --card-channel C0123456789)"; fi
+  grep -qx SLACK_BOT_TOKEN <<<"$2" \
+    && ok "secret SLACK_BOT_TOKEN" || bad "secret SLACK_BOT_TOKEN missing: no cards (gh secret set SLACK_BOT_TOKEN --repo $repo)"
+  # upgrade sets the variables before its caller PR merges: until then clicks and cards do nothing
+  local merge="merge the gh agentkit upgrade $repo PR"
+  grep -q 'types: \[agentkit-slack-reply\]' <<<"${3:-}" && grep -q '^  repository_dispatch:' <<<"${3:-}" \
+    && ok "caller takes the bot's repository_dispatch" || warn "the caller has no repository_dispatch trigger for agentkit-slack-reply: button clicks do nothing ($merge)"
+  grep -q '/\.github/workflows/card\.yml@' <<<"${3:-}" \
+    && ok "caller has the card job" || warn "the caller has no card job: no cards are posted ($merge)"
+  # the dispatch job's own block: from its name to the next job
+  awk '/^  dispatch:/{d=1; next} /^  [A-Za-z_][A-Za-z0-9_-]*:/{d=0} d' <<<"${3:-}" | grep -q 'SLACK_BOT_TOKEN: \${{ secrets.SLACK_BOT_TOKEN }}' \
+    && ok "caller's dispatch job gets SLACK_BOT_TOKEN" || warn "the caller's dispatch job does not pass SLACK_BOT_TOKEN: no Done cards ($merge)"
+
+  if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
+    echo "        Slack bot: export SLACK_BOT_TOKEN in this shell to also check the token and the channel with Slack"
+  else
+    local resp err
+    resp=$(slack_api auth.test) || resp='{"ok":false,"error":"no answer from slack.com"}'
+    if [ "$(jq -r .ok <<<"$resp")" = true ]; then ok "Slack auth.test: bot $(jq -r .user <<<"$resp") in $(jq -r .team <<<"$resp")"
+    else bad "Slack auth.test: $(jq -r '.error // "failed"' <<<"$resp") (the local SLACK_BOT_TOKEN is not a working bot token)"; fi
+    if valid_channel "$chan"; then
+      resp=$(slack_api "conversations.info?channel=$chan") || resp='{"ok":false,"error":"no answer from slack.com"}'
+      err=$(jq -r '.error // ""' <<<"$resp")
+      if [ "$(jq -r .ok <<<"$resp")" = true ]; then
+        ok "Slack channel #$(jq -r .channel.name <<<"$resp") reachable"
+        if [ "$(jq -r .channel.is_member <<<"$resp")" = false ]; then
+          warn "the bot is not in #$(jq -r .channel.name <<<"$resp"): invite it there (/invite @<bot>)"
+        fi
+      elif [ "$err" = missing_scope ]; then
+        warn "can't check the channel: needs $(jq -r '.needed // "channels:read"' <<<"$resp") (the bot itself needs only chat:write)"
+      else
+        bad "Slack channel $chan: $err (wrong id, or a private channel the bot was not invited to)"
+      fi
+    fi
+  fi
+  echo "        Slack bot: the bot server's connection and its users.json cannot be checked from here (see docs/slack-bot.md)"
+}
+
+# a Slack Web API GET with the local SLACK_BOT_TOKEN; the header goes in on stdin so the token is never in argv
+slack_api() {
+  printf 'header = "Authorization: Bearer %s"\n' "$SLACK_BOT_TOKEN" | curl -sS --max-time 20 -K - "https://slack.com/api/$1"
+}
 
 cmd_doctor() {
   local repo=${1:?owner/repo}
@@ -433,6 +489,7 @@ cmd_doctor() {
 
   local caller_text; caller_text=$(gh api "repos/$repo/contents/.github/workflows/agentkit.yml?ref=$def" --jq .content 2>/dev/null | base64 -d 2>/dev/null || true)
   doctor_interface "$repo" "$secrets" "$have" "$caller_text"
+  doctor_bot "$repo" "$secrets" "$caller_text"
 
   local num; num=$(var_get "$repo" AGENTKIT_PROJECT)
   if [ -n "$num" ]; then
