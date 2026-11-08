@@ -38,7 +38,7 @@ expect("project refs kept (no @v1 left)", not any("@v1" in l for l in out.splitl
 expect("old caller gains the triage job on the project's pin", "\n  triage:\n" in out and "triage.yml@main" in out, out)
 expect("old caller gains the card job on the project's pin", "\n  card:\n" in out and "card.yml@main" in out, out)
 expect("old caller gains the bot's repository_dispatch trigger",
-       "  repository_dispatch:\n    types: [agentkit-slack-reply]\n" in out, out)
+       "  repository_dispatch:\n    types: [agentkit-slack-reply, agentkit-slack-task]\n" in out, out)
 expect("old caller's dispatch job gains SLACK_BOT_TOKEN",
        "SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}" in out.split("\n  dispatch:\n")[1].split("\n  triage:\n")[0], out)
 expect("project plugins kept", "ponytail@agentkit" in out, out)
