@@ -12,6 +12,10 @@ Python 3.9+, stdlib only.
   card.py done < {"number", "title", "body", "url"}
       A Done card for a merged agent PR (title, the first line of the PR's `## Summary`, link; no buttons), linted and
       posted as `post` does. Prints the message ts.
+  card.py resolve < {"repo", "number", "title", "state", "stateReason", "labels", "comments": [kit comment bodies]}
+      Edits each card found through the issue's `<!-- agentkit:card channel=C ts=T -->` comments to the issue's
+      outcome (closed, or its new status), without buttons. Prints how many.
+  card.py marker < ts-json      the marker comment body for a card just posted (env SLACK_CHANNEL)
   card.py post < issue-json
       build + lint, then chat.postMessage to env SLACK_CHANNEL with env SLACK_BOT_TOKEN. Prints the message ts.
 
@@ -130,17 +134,13 @@ def post(issue):
     return send(build(issue))
 
 
-def send(card):
-    """Lint, then chat.postMessage to env SLACK_CHANNEL with env SLACK_BOT_TOKEN. Returns the message ts."""
-    bad = lint(card)
-    if bad:
-        sys.exit("card.py: " + "; ".join(bad))
+def slack(method, payload):
+    """One Slack Web API call with env SLACK_BOT_TOKEN. A network error (DNS, timeout, reset) is tried again; Slack's
+    own error answer is not."""
     req = urllib.request.Request(
-        "https://slack.com/api/chat.postMessage",
-        data=json.dumps({"channel": os.environ["SLACK_CHANNEL"], **card}).encode(),
+        "https://slack.com/api/" + method, data=json.dumps(payload).encode(),
         headers={"Authorization": "Bearer " + os.environ["SLACK_BOT_TOKEN"], "Content-Type": "application/json; charset=utf-8"},
     )
-    # a network error (DNS, timeout, reset) is tried again; Slack's own answer is not
     for attempt in range(5):
         try:
             res = json.load(urllib.request.urlopen(req, timeout=20))
@@ -151,7 +151,46 @@ def send(card):
             time.sleep(10)
     if not res.get("ok"):
         sys.exit("card.py: Slack said " + str(res.get("error")))
-    return res["ts"]
+    return res
+
+
+def send(card):
+    """Lint, then chat.postMessage to env SLACK_CHANNEL. Returns the message ts."""
+    bad = lint(card)
+    if bad:
+        sys.exit("card.py: " + "; ".join(bad))
+    return slack("chat.postMessage", {"channel": os.environ["SLACK_CHANNEL"], **card})["ts"]
+
+
+MARKER = re.compile(r"^<!-- agentkit:card channel=([A-Z0-9]+) ts=([0-9]+\.[0-9]+) -->$")
+
+
+def marker(ts):
+    """The hidden comment the card job leaves on the issue, so the card can be found and resolved later."""
+    return f"<!-- agentkit:card channel={os.environ['SLACK_CHANNEL']} ts={ts} -->"
+
+
+def outcome(issue):
+    if issue.get("state") == "CLOSED":
+        return "Closed" + (" as done" if issue.get("stateReason") == "COMPLETED" else "")
+    status = next((l[len("status:"):] for l in issue.get("labels", []) if l.startswith("status:")), "")
+    return f"No longer waiting: now {status}" if status else "No longer waiting"
+
+
+def resolve(issue):
+    """Edit every card the kit posted for this issue (its marker comments) to the issue's outcome, without buttons.
+    issue = {"repo", "number", "title", "state", "stateReason", "labels", "comments": [kit comment bodies]}."""
+    title = clip(issue["title"], TITLE_MAX)
+    url = f"https://github.com/{issue['repo']}/issues/{issue['number']}"
+    text = f"*{title}*\n{outcome(issue)}\n<{url}|#{issue['number']}>"
+    done = 0
+    for body in issue.get("comments", []):
+        m = MARKER.match(body.strip())
+        if m:
+            slack("chat.update", {"channel": m.group(1), "ts": m.group(2), "text": f"{title}: {outcome(issue)}",
+                                  "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]})
+            done += 1
+    return done
 
 
 if __name__ == "__main__":
@@ -165,6 +204,10 @@ if __name__ == "__main__":
         sys.exit(1 if bad else 0)
     elif cmd == "post":
         print(post(data))
+    elif cmd == "marker":
+        print(marker(data))
+    elif cmd == "resolve":
+        print(resolve(data))
     elif cmd == "done":
         print(send(done(data)))
     else:

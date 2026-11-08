@@ -65,6 +65,16 @@ expect("done card: title, first Summary line, link, no buttons", len(d["blocks"]
 expect("done card within budget", card.lint(d) == [], card.lint(d))
 expect("done card without a Summary says Merged.", "Merged." in card.done({"number": 1, "title": "t", "url": "u", "body": None})["text"])
 
+# resolve: every marked card is edited to the outcome, without buttons
+sent, real_slack = [], card.slack
+card.slack = lambda method, payload: sent.append((method, payload)) or {"ok": True}
+res_issue = {"repo": "o/r", "number": 5, "title": "t", "state": "OPEN", "labels": ["status:changes-requested"],
+             "comments": ["<!-- agentkit:card channel=C1 ts=1.2 -->", "other", "<!-- agentkit:card channel=C1 ts=3.4 -->x"]}
+expect("resolve edits only exact marker comments", card.resolve(res_issue) == 1 and sent[0][0] == "chat.update" and sent[0][1]["ts"] == "1.2")
+expect("resolved card has no buttons and says the new status", len(sent[0][1]["blocks"]) == 1 and "now changes-requested" in sent[0][1]["text"])
+expect("closed as completed reads Closed as done", card.outcome({"state": "CLOSED", "stateReason": "COMPLETED"}) == "Closed as done")
+card.slack = real_slack
+
 # post: a network error is retried, Slack's answer is used
 import io, os, urllib.error
 os.environ.update(SLACK_CHANNEL="C1", SLACK_BOT_TOKEN="x")

@@ -104,10 +104,13 @@ jobs:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
 
   card:
-    # Slack bot mode (AGENTKIT_SLACK_BOT=true): an issue that starts waiting on a person gets one short card
+    # Slack bot mode (AGENTKIT_SLACK_BOT=true): an issue that starts waiting on a person gets one short card,
+    # and its cards are resolved when it gets a new status or closes
     if: >-
-      github.event_name == 'issues' && github.event.action == 'labeled' &&
-      github.event.label.name == 'action:required' && vars.AGENTKIT_SLACK_BOT == 'true'
+      github.event_name == 'issues' && vars.AGENTKIT_SLACK_BOT == 'true' &&
+      (github.event.action == 'closed' ||
+       (github.event.action == 'labeled' &&
+        (github.event.label.name == 'action:required' || startsWith(github.event.label.name, 'status:'))))
     uses: example-org/agentkit/.github/workflows/card.yml@main
     secrets:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}

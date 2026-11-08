@@ -82,8 +82,8 @@ channel: the question from the agent's `STUCK:` message (with its `options` as b
 research recommendation, or the first line of the kit's latest comment. It waits up to a minute for the kit's explaining
 comment to land after the label. When the gate merges an agent PR, the channel gets a short **Done** card (title, the first line of the PR's
 `## Summary`, link; no buttons) instead of the long "task done" message the webhook sends without the bot. The caller's
-`dispatch` job needs the `SLACK_BOT_TOKEN` secret for it. The card is posted once per `action:required` label; it is not yet edited when the
-issue is answered or closed somewhere else.
+`dispatch` job needs the `SLACK_BOT_TOKEN` secret for it. The card job also leaves a hidden marker comment naming the card; when the issue gets a new
+status without `action:required`, or closes, every card it has is edited to the outcome and loses its buttons.
 
 To post a card by hand (for example to test), send the same JSON to `scripts/card.py post` with `SLACK_BOT_TOKEN` and
 `SLACK_CHANNEL` set; add `"comments": [...]` to derive the ask, or `"ask"` and `"options"` to give them.

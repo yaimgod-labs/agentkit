@@ -1,5 +1,7 @@
 # Slack bot mode (repo var AGENTKIT_SLACK_BOT=true, on top of AGENTKIT_INTERFACE=claude-slack): an issue that starts
-# waiting on a person (label action:required added) gets one short card in the bot's channel (scripts/card.py).
+# waiting on a person (label action:required added) gets one short card in the bot's channel (scripts/card.py), and a
+# hidden marker comment that names the card. When the issue stops waiting (a new status without action:required) or
+# closes, every card it has is edited to the outcome, without buttons, so an old card cannot act on a new state.
 # The channel is repo var AGENTKIT_CARD_CHANNEL; the bot token is secret SLACK_BOT_TOKEN. Neither reaches Claude.
 name: agentkit-card
 
@@ -33,7 +35,7 @@ jobs:
         with:
           client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
           private-key: ${{ secrets.AGENTKIT_APP_KEY }}
-          permission-issues: read
+          permission-issues: write  # the card's marker comment
           permission-actions: read  # Load agentkit reads this run's referenced workflows
 
       - name: Load agentkit
@@ -49,29 +51,46 @@ jobs:
           git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
           git -C .agentkit-kit checkout -q FETCH_HEAD
 
-      - name: Post the card
+      - name: Post or resolve the card
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           SLUG: ${{ steps.app.outputs.app-slug }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL: ${{ vars.AGENTKIT_CARD_CHANNEL }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
         run: |
           [ -n "$SLACK_CHANNEL" ] || { echo "::error::repo variable AGENTKIT_CARD_CHANNEL is not set"; exit 1; }
           [[ $N =~ ^[1-9][0-9]*$ ]] || { echo "::error::not an issue number"; exit 1; }
+          # the kit's own comments only (gh issue view names an App by its slug, without the [bot] suffix the REST API adds):
+          # a person's or an agent-as-user's text never becomes the ask, and no one else's comment can name a card
+          # shellcheck disable=SC2016  # a jq filter, not shell
+          kit='[.comments[] | select(.author.login == $slug or .author.login == $slug + "[bot]")]'
+
+          if [ "$ACTION" != labeled ] || [ "$LABEL" != action:required ]; then
+            issue=$(gh issue view "$N" --repo "$REPO" --json state,stateReason,title,labels,comments)
+            if [ "$(jq -r .state <<<"$issue")" = OPEN ] && jq -e '[.labels[].name] | index("action:required")' <<<"$issue" >/dev/null; then
+              echo "#$N still waits; its card stays"; exit 0
+            fi
+            n=$(jq -c --arg repo "$REPO" --argjson n "$N" --arg slug "$SLUG" \
+              "{repo: \$repo, number: \$n, title, state, stateReason, labels: [.labels[].name], comments: ($kit | map(.body))}" <<<"$issue" \
+              | python3 .agentkit-kit/scripts/card.py resolve)
+            echo "#$N: $n card(s) resolved"; exit 0
+          fi
+
           # The status is set first and the explaining comment right after it, so the label event can arrive before
           # the comment: wait for the kit's newest comment to be after the issue's last update, for up to a minute
           # (ponytail: a poll, not an event; a card from the previous comment is the worst case).
           since=$(gh issue view "$N" --repo "$REPO" --json updatedAt --jq .updatedAt)
           for _ in 1 2 3 4 5 6; do
             issue=$(gh issue view "$N" --repo "$REPO" --json state,title,labels,comments)
-            newest=$(jq -r --arg slug "$SLUG" '[.comments[] | select(.author.login == $slug or .author.login == $slug + "[bot]") | .createdAt] | max // ""' <<<"$issue")
+            newest=$(jq -r --arg slug "$SLUG" "$kit | map(.createdAt) | max // \"\"" <<<"$issue")
             [[ -n $newest && ! $newest < $since ]] && break
             sleep 10
           done
           [ "$(jq -r .state <<<"$issue")" = OPEN ] || { echo "#$N is closed; no card"; exit 0; }
           jq -e '[.labels[].name] | index("action:required")' <<<"$issue" >/dev/null || { echo "#$N no longer waits; no card"; exit 0; }
-          # only the kit's own comments say what the issue needs; a person's or an agent-as-user's text never becomes the ask
-          # (gh issue view names an App by its slug, without the [bot] suffix the REST API adds)
-          jq -c --arg repo "$REPO" --argjson n "$N" --arg slug "$SLUG" \
-            '{repo: $repo, number: $n, title, labels: [.labels[].name], comments: [.comments[] | select(.author.login == $slug or .author.login == $slug + "[bot]") | .body]}' <<<"$issue" \
-            | python3 .agentkit-kit/scripts/card.py post
+          ts=$(jq -c --arg repo "$REPO" --argjson n "$N" --arg slug "$SLUG" \
+            "{repo: \$repo, number: \$n, title, labels: [.labels[].name], comments: ($kit | map(.body))}" <<<"$issue" \
+            | python3 .agentkit-kit/scripts/card.py post)
+          jq -n --arg ts "$ts" '$ts' | python3 .agentkit-kit/scripts/card.py marker | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
