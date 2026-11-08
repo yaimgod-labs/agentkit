@@ -130,6 +130,54 @@ expect("resolved card has no buttons and says the new status", len(sent[0][1]["b
 expect("closed as completed reads Closed as done", card.outcome({"state": "CLOSED", "stateReason": "COMPLETED"}) == "Closed as done")
 card.slack = real_slack
 
+# chief of staff, no re-asking: a person's say after the kit's latest ask means the reply job has it
+K = lambda i, b: {"id": i, "body": b}
+own = "<!-- agentkit:card channel=C1 ts=1.2 -->"
+rec = "<!-- agentkit:slack-reply login=alice nonce=" + "0" * 32 + " sig=" + "0" * 64 + " -->\n\n**Slack reply by @alice:**\n\nuse A"
+expect("answered: a person after the kit's latest ask", card.answered([K(1, "Which?"), K(2, own)], [K(3, "use A")]))
+expect("answered: a person before the latest ask is not an answer", not card.answered([K(1, "old ask"), K(5, "new ask")], [K(3, "x")]))
+expect("answered: a / command is not an answer (the reply job skips it)", not card.answered([K(1, "ask")], [K(3, "/plan")]))
+expect("answered: a Slack reply record is the person's, not the kit's ask", card.answered([K(1, "ask"), K(4, rec)], [K(4, "use A")]))
+expect("answered: no ask from the kit, nothing to answer", not card.answered([K(2, own)], [K(3, "x")]))
+
+# chief of staff, dedup: the card an issue's latest wait is on
+fold_m = "<!-- agentkit:card channel=C1 ts=1.2 of=4 -->"
+expect("current: own card", card.current(["ask", own]) == ("C1", "1.2", None))
+expect("current: folded into #4's card", card.current(["ask", fold_m]) == ("C1", "1.2", 4))
+expect("current: a later ask has no card yet", card.current(["ask", own, "new ask"]) is None)
+expect("current: a Slack reply record is not a new ask", card.current(["ask", own, rec]) == ("C1", "1.2", None))
+expect("current: only an exact marker", card.current(["ask", own + "x"]) is None)
+EPIC, B2 = "https://github.com/o/r/issues/1", "https://github.com/o/r/issues/2"
+P = {"number": 4, "title": "Pick a format", "labels": ["status:needs-info", "action:required"], "comments": [stuck, own],
+     "parent": EPIC, "blockers": []}
+f = card.fold_into({"repo": "o/r", "number": 9, "parent": EPIC, "blockers": [], "waiting": [P]})
+expect("fold: same parent epic folds into its card", f and (f["channel"], f["ts"], f["of"]) == ("C1", "1.2", 4), f)
+expect("fold: the marker on #9 points at #4's card", f["marker"] == "<!-- agentkit:card channel=C1 ts=1.2 of=4 -->", f)
+orig = card.build({**P, "repo": "o/r"})
+expect("fold: the card keeps its buttons and ask", f["card"]["blocks"][1] == orig["blocks"][1] and
+       f["card"]["blocks"][0]["text"]["text"].startswith(orig["blocks"][0]["text"]["text"]), f["card"])
+expect("fold: adds Also affects #9, within budget", f["card"]["blocks"][0]["text"]["text"].endswith("\nAlso affects #9") and card.lint(f["card"]) == [])
+expect("fold: a marker is not built into the card", card.MARKER.match(f["marker"]) is None)
+shared = card.fold_into({"repo": "o/r", "number": 9, "parent": None, "blockers": [B2], "waiting": [{**P, "parent": None, "blockers": [B2, EPIC]}]})
+expect("fold: a shared blocker folds", shared and shared["of"] == 4, shared)
+for name, mine, theirs in [("different parents", EPIC, {"parent": B2}), ("no parent on either", None, {"parent": None}),
+                           ("own card replaced by a later ask", EPIC, {"comments": [stuck, own, "a newer ask"]}),
+                           ("a folded issue is not a card to fold into", EPIC, {"comments": [stuck, fold_m]})]:
+    expect("fold: none when " + name, card.fold_into({"repo": "o/r", "number": 9, "parent": mine, "blockers": [], "waiting": [{**P, **theirs}]}) is None)
+Q = {"number": 7, "title": "q", "labels": [], "comments": ["ask", fold_m], "parent": None, "blockers": []}
+older = {**P, "number": 3, "comments": ["ask", "<!-- agentkit:card channel=C1 ts=0.5 -->"]}
+f2 = card.fold_into({"repo": "o/r", "number": 9, "parent": EPIC, "blockers": [], "waiting": [P, Q, older]})
+expect("fold: the oldest card wins", f2["of"] == 3 and f2["ts"] == "0.5", f2)
+f3 = card.fold_into({"repo": "o/r", "number": 9, "parent": EPIC, "blockers": [], "waiting": [P, Q]})
+expect("fold: lists every waiting issue already folded in", f3["card"]["blocks"][0]["text"]["text"].endswith("\nAlso affects #7, #9"), f3)
+many_q = [{**Q, "number": 100 + i} for i in range(40)]
+f4 = card.fold_into({"repo": "o/r", "number": 9, "parent": EPIC, "blockers": [], "waiting": [P] + many_q})
+expect("fold: a long Also line is clipped", len(f4["card"]["blocks"][0]["text"]["text"].split("\n")[3]) <= card.TITLE_MAX and card.lint(f4["card"]) == [])
+f5 = card.fold_into({"repo": "o/r", "number": 9, "parent": EPIC, "blockers": [], "waiting": [{**P, "comments": [stuck, own, rec]}]})
+expect("fold: the card is rebuilt from what it was posted from", f5["card"]["blocks"][0] == f["card"]["blocks"][0], f5)
+expect("orphans: waiting issues folded into the resolved issue's cards",
+       card.orphans({"comments": [stuck, own], "waiting": [Q, {**Q, "number": 8, "comments": ["ask", fold_m.replace("1.2", "9.9")]}, P]}) == [7])
+
 # post: a network error is retried, Slack's answer is used
 import io, os, urllib.error
 os.environ.update(SLACK_CHANNEL="C1", SLACK_BOT_TOKEN="x")

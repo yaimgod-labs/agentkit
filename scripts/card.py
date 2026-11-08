@@ -24,6 +24,16 @@ Python 3.9+, stdlib only.
   card.py post < issue-json
       build + lint, then chat.postMessage to env SLACK_CHANNEL with env SLACK_BOT_TOKEN. Prints the message ts.
 
+Chief of staff (scripts/card.sh does the GitHub reads; these only decide, and never answer for anyone):
+  card.py answered < {"kit": [{id, body}], "people": [{id, body}]}
+      `true` when a person (people.sh) commented after the kit's latest ask: the reply job has it, post no card.
+  card.py fold < {"repo", "number", "parent", "blockers", "waiting": [...]}
+      The card to fold the issue into (see fold_into): {"channel", "ts", "of", "marker", "card"}, or `null`.
+      A fold marker `<!-- agentkit:card channel=C ts=T of=P -->` is not a card marker: `resolve` leaves it alone.
+  card.py update < {"channel", "ts", "card"}      lint, then chat.update (the folded card)
+  card.py orphans < {"comments": [...], "waiting": [...]}
+      After `resolve`: the waiting issues that were folded into the resolved cards, one number per line.
+
 A button's value is `<owner/repo>#<n>|<text>` (text sent as the reply) or, for a modal, `<owner/repo>#<n>|<keyword>`.
 """
 import json
@@ -129,10 +139,12 @@ def build(issue):
         buttons.append((other, f"{ref}|", "modal"))
     title = clip(issue["title"], TITLE_MAX)
     ask = clip(issue.get("ask") or FALLBACK_ASK, ASK_MAX)
+    # chief of staff: the other waiting issues this card stands for (fold_into), plain text, no links
+    also = "\n" + clip("Also affects " + ", ".join(f"#{x}" for x in issue["also"]), TITLE_MAX) if issue.get("also") else ""
     return {
         "text": f"{title}: {ask}",
         "blocks": [
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*\n{ask}\n<{url}|#{n}>"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*\n{ask}\n<{url}|#{n}>{also}"}},
             {"type": "actions", "elements": [
                 {"type": "button", "text": {"type": "plain_text", "text": label}, "action_id": f"{how}_{i}", "value": value}
                 for i, (label, value, how) in enumerate(buttons)
@@ -232,6 +244,83 @@ def resolve(issue):
     return done
 
 
+# Chief of staff: before a Decide card is posted it is held back (a person already answered) or folded into the card
+# of a waiting issue in the same blocker chain. Neither ever answers for anyone.
+FOLD = re.compile(r"^<!-- agentkit:card channel=([A-Z0-9]+) ts=([0-9]+\.[0-9]+) of=([1-9][0-9]*) -->$")
+
+
+def asks(body):
+    """A kit comment that asks or tells a person something: visible text, and not a Slack reply record (slackrec.py),
+    which is a person's say the kit wrote down."""
+    return not body.startswith("<!-- agentkit:slack-reply ") and bool(latest([body]))
+
+
+def answered(kit, people):
+    """True when a person said something on the issue after the kit's latest ask: the reply job has it, and a card
+    would ask again. kit: the kit's comments [{id, body}]; people: people.sh's [{id, body}] (people with write access,
+    and verified Slack reply records). A `/` command is not an answer (the reply job skips it). No ask: False."""
+    last = max((c["id"] for c in kit if asks(c["body"])), default=None)
+    return last is not None and any(c["id"] > last and not c["body"].startswith("/") for c in people)
+
+
+def markers(comments):
+    """(index, channel, ts, of) for each card marker among the kit's comment bodies; `of` is None for the issue's own
+    card, else the issue whose card it was folded into."""
+    out = []
+    for i, body in enumerate(comments):
+        m = MARKER.match(body.strip()) or FOLD.match(body.strip())
+        if m:
+            out.append((i, m.group(1), m.group(2), int(m.group(3)) if m.re is FOLD else None))
+    return out
+
+
+def current(comments):
+    """The card the issue's latest ask is on: (channel, ts, of) of its latest marker, or None when an ask came after
+    that marker (this wait got no card, or the card is from an older wait)."""
+    ms = markers(comments)
+    if not ms or any(asks(b) for b in comments[ms[-1][0] + 1:]):
+        return None
+    return ms[-1][1:]
+
+
+def linked(a, b):
+    """Same blocker chain: the same parent issue (sub-issues), or a `blocked_by` issue in common (URLs)."""
+    return bool(a.get("parent") and a["parent"] == b.get("parent")) or bool(set(a.get("blockers") or []) & set(b.get("blockers") or []))
+
+
+def fold_into(d):
+    """The card to fold issue d into instead of posting one: the oldest live own card of another waiting issue in its
+    blocker chain. d = {"repo", "number", "parent", "blockers", "waiting": [{"number", "title", "labels", "comments"
+    (the kit's bodies), "parent", "blockers"}]} (the open action:required issues). Returns {"channel", "ts", "of",
+    "marker", "card"} or None. The card is rebuilt from what it was posted from (its issue's comments before its
+    marker), so its ask and buttons stay, plus "Also affects" every waiting issue folded into it, d included."""
+    owners = [(current(w["comments"]), w) for w in d["waiting"] if w["number"] != d["number"]]
+    owners = [(c, w) for c, w in owners if c and c[2] is None and linked(d, w)]
+    if not owners:
+        return None
+    (channel, ts, _), w = min(owners, key=lambda o: float(o[0][1]))
+    also = {d["number"]} | {x["number"] for x in d["waiting"] if x is not w and (current(x["comments"]) or ())[:2] == (channel, ts)}
+    cut = markers(w["comments"])[-1][0]
+    card = build({**w, "repo": d["repo"], "comments": w["comments"][:cut], "also": sorted(also)})
+    return {"channel": channel, "ts": ts, "of": w["number"],
+            "marker": f"<!-- agentkit:card channel={channel} ts={ts} of={w['number']} -->", "card": card}
+
+
+def orphans(d):
+    """After an issue's cards were resolved: the waiting issues folded into one of them, which now need a card.
+    d = {"comments": [the resolved issue's kit bodies], "waiting": [{"number", "comments"}]}."""
+    mine = {(c, t) for _, c, t, of in markers(d["comments"]) if of is None}
+    return [w["number"] for w in d["waiting"] for c in [current(w["comments"])] if c and c[2] is not None and c[:2] in mine]
+
+
+def update(d):
+    """Lint, then chat.update the card at d["channel"], d["ts"] to d["card"] (a fold: same buttons, a new Also line)."""
+    bad = lint(d["card"])
+    if bad:
+        sys.exit("card.py: " + "; ".join(bad))
+    slack("chat.update", {"channel": d["channel"], "ts": d["ts"], **d["card"]})
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     data = json.load(sys.stdin)
@@ -249,5 +338,13 @@ if __name__ == "__main__":
         print(resolve(data))
     elif cmd == "done":
         print(send(done(data)))
+    elif cmd == "answered":
+        print(json.dumps(answered(data["kit"], data["people"])))
+    elif cmd == "fold":
+        print(json.dumps(fold_into(data)))
+    elif cmd == "orphans":
+        print("\n".join(map(str, orphans(data))))
+    elif cmd == "update":
+        update(data)
     else:
         sys.exit(__doc__)

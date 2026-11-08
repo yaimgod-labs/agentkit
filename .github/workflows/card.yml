@@ -2,6 +2,8 @@
 # waiting on a person (label action:required added) gets one short card in the bot's channel (scripts/card.py), and a
 # hidden marker comment that names the card. When the issue stops waiting (a new status without action:required) or
 # closes, every card it has is edited to the outcome, without buttons, so an old card cannot act on a new state.
+# Chief of staff (scripts/card.sh): no card when a person already answered on the issue; an issue in the same blocker
+# chain as one with a live card is folded into that card ("Also affects #n") and gets its own card once that one resolves.
 # The channel is repo var AGENTKIT_CARD_CHANNEL; the bot token is secret SLACK_BOT_TOKEN. Neither reaches Claude.
 name: agentkit-card
 
@@ -55,6 +57,8 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           SLUG: ${{ steps.app.outputs.app-slug }}
+          AGENTKIT_BOT: ${{ steps.app.outputs.app-slug }}[bot]
+          AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}  # verifies Slack reply records (people.sh)
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL: ${{ vars.AGENTKIT_CARD_CHANNEL }}
           ACTION: ${{ github.event.action }}
@@ -75,7 +79,10 @@ jobs:
             n=$(jq -c --arg repo "$REPO" --argjson n "$N" --arg slug "$SLUG" \
               "{repo: \$repo, number: \$n, title, state, stateReason, labels: [.labels[].name], comments: ($kit | map(.body))}" <<<"$issue" \
               | python3 .agentkit-kit/scripts/card.py resolve)
-            echo "#$N: $n card(s) resolved"; exit 0
+            echo "#$N: $n card(s) resolved"
+            # issues folded into those cards ("Also affects") still wait: each gets a card now (or folds elsewhere)
+            [ "$n" = 0 ] || .agentkit-kit/scripts/card.sh "$REPO" "$N" refold
+            exit 0
           fi
 
           # The status is set first and the explaining comment right after it, so the label event can arrive before
@@ -88,9 +95,6 @@ jobs:
             [[ -n $newest && ! $newest < $since ]] && break
             sleep 10
           done
-          [ "$(jq -r .state <<<"$issue")" = OPEN ] || { echo "#$N is closed; no card"; exit 0; }
-          jq -e '[.labels[].name] | index("action:required")' <<<"$issue" >/dev/null || { echo "#$N no longer waits; no card"; exit 0; }
-          ts=$(jq -c --arg repo "$REPO" --argjson n "$N" --arg slug "$SLUG" \
-            "{repo: \$repo, number: \$n, title, labels: [.labels[].name], comments: ($kit | map(.body))}" <<<"$issue" \
-            | python3 .agentkit-kit/scripts/card.py post)
-          jq -n --arg ts "$ts" '$ts' | python3 .agentkit-kit/scripts/card.py marker | gh issue comment "$N" --repo "$REPO" --body-file - >/dev/null
+          # the chief of staff first (card.sh): no card when a person already answered, a fold into the card of a
+          # waiting issue in the same blocker chain; else the card and its marker
+          .agentkit-kit/scripts/card.sh "$REPO" "$N" post
