@@ -195,7 +195,7 @@
     "description": "The Claude model the agents use. Each job in the caller can set its own.",
     "type": "string",
     "default": "claude-opus-5-5",
-    "options": ["claude-opus-5-5", "claude-sonnet-4-5"],
+    "options": ["claude-opus-5-5", "claude-sonnet-5-5"],
     "other": true,
     "validate": {"regex": "claude-[a-z0-9.-]+", "hint": "must be a Claude model id such as claude-opus-5-5"},
     "apply": {"via": "caller", "job": ["refine", "implement", "plan", "review", "retro"], "input": "model"}
