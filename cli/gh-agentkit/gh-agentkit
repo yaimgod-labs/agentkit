@@ -439,7 +439,7 @@ doctor_bot() {
     else bad "Slack auth.test: $(jq -r '.error // "failed"' <<<"$resp") (the local SLACK_BOT_TOKEN is not a working bot token)"; fi
     if valid_channel "$chan"; then
       resp=$(slack_api "conversations.info?channel=$chan") || resp='{"ok":false,"error":"no answer from slack.com"}'
-      err=$(jq -r '.error // ""' <<<"$resp")
+      err=$(jq -r '.error // ""' <<<"$resp" 2>/dev/null || echo "not a Slack answer")
       if [ "$(jq -r .ok <<<"$resp")" = true ]; then
         ok "Slack channel #$(jq -r .channel.name <<<"$resp") reachable"
         if [ "$(jq -r .channel.is_member <<<"$resp")" = false ]; then
