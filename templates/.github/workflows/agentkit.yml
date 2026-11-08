@@ -22,6 +22,9 @@ on:
     - cron: "0 7 * * *"  # daily digest (UTC)
     - cron: "0 8 * * 1"  # weekly retro (UTC, Mondays)
   workflow_dispatch:
+  # the Slack bot's button clicks (slack-bot interface)
+  repository_dispatch:
+    types: [agentkit-slack-reply]
 
 permissions:
   contents: read
@@ -87,11 +90,13 @@ jobs:
     # Claude Code + Slack mode (AGENTKIT_INTERFACE=claude-slack): a person's answer on a waiting issue,
     # posted from its Slack card's Comment button, carries out the reply's action (`/` commands go to their own jobs)
     if: >-
-      github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
-      github.event.comment.user.type != 'Bot' && !startsWith(github.event.comment.body, '/') &&
-      vars.AGENTKIT_INTERFACE == 'claude-slack' &&
-      (contains(github.event.issue.labels.*.name, 'action:required') ||
-       contains(github.event.issue.labels.*.name, 'status:blocked'))
+      (github.event_name == 'repository_dispatch' && github.event.action == 'agentkit-slack-reply' &&
+       (vars.AGENTKIT_INTERFACE == 'claude-slack' || vars.AGENTKIT_INTERFACE == 'slack-bot')) ||
+      (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
+       github.event.comment.user.type != 'Bot' && !startsWith(github.event.comment.body, '/') &&
+       vars.AGENTKIT_INTERFACE == 'claude-slack' &&
+       (contains(github.event.issue.labels.*.name, 'action:required') ||
+        contains(github.event.issue.labels.*.name, 'status:blocked')))
     uses: your-org/agentkit/.github/workflows/reply.yml@v1
     secrets:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
