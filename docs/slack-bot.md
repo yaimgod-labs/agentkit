@@ -66,14 +66,25 @@ private package: make it public, or log the server in to GHCR. Until the first r
 
 Secret files must be readable by uid 10001. Never enable debug logging for Bolt or the Slack SDK: it logs payloads.
 
-## Post a card (slice 1, by hand)
+## Turn it on for a repo
+
+On top of `AGENTKIT_INTERFACE=claude-slack`, set on the repo:
 
 ```
-echo '{"repo":"owner/repo","number":7,"title":"…","ask":"…","labels":["status:needs-approval","type:research"]}' \
-  | SLACK_BOT_TOKEN=… SLACK_CHANNEL=C… python3 scripts/card.py post
+gh variable set AGENTKIT_SLACK_BOT --repo owner/repo --body true
+gh variable set AGENTKIT_CARD_CHANNEL --repo owner/repo --body C0123456789
+gh secret set SLACK_BOT_TOKEN --repo owner/repo        # the same xoxb- token the bot uses
 ```
 
-Workflows post cards by themselves in the next slice.
+and run `gh agentkit upgrade owner/repo` so the caller has the `repository_dispatch` trigger and the `reply` and `card`
+jobs. When an issue starts waiting on a person (label `action:required`), the `card` job posts one short card to the
+channel: the question from the agent's `STUCK:` message (with its `options` as buttons), the first line of an RFC or
+research recommendation, or the first line of the kit's latest comment. It waits up to a minute for the kit's explaining
+comment to land after the label. The card is posted once per `action:required` label; it is not yet edited when the
+issue is answered or closed somewhere else.
+
+To post a card by hand (for example to test), send the same JSON to `scripts/card.py post` with `SLACK_BOT_TOKEN` and
+`SLACK_CHANNEL` set; add `"comments": [...]` to derive the ask, or `"ask"` and `"options"` to give them.
 
 ## Checks on every click
 
