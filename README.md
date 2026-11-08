@@ -65,7 +65,15 @@ No bot of our own: the [GitHub app for Slack](https://github.com/integrations/sl
 
 For the stricter mode where you answer from Slack, see [Claude Code + Slack mode](#claude-code--slack-mode).
 
-Repo variables: `AGENTKIT_WIP` (2), `AGENTKIT_BASE` (PR target if not the default branch), `AGENTKIT_RUNNER`, `AUTO_MERGE`, plus `AGENTKIT_CLIENT_ID` / `AGENTKIT_PROJECT` set by the CLI.
+Repo variables: `AGENTKIT_WIP` (2), `AGENTKIT_BASE` (PR target if not the default branch), `AGENTKIT_RUNNER`, `AUTO_MERGE`, plus `AGENTKIT_CLIENT_ID` / `AGENTKIT_PROJECT` set by the CLI. The full list is in [Settings](#settings).
+
+## Settings
+
+`config/settings.json` lists everything you can change, one entry each: what it does in plain words, its default, the common choices, the rule a value must pass, and how a change is applied (your own Slack bot preference, a repo variable, a `with:` input or cron in the caller, or the bot's server env). `tests/test_settings.py` fails when a repo variable, caller input, caller cron or bot env var the kit reads is missing from it.
+
+- `python3 scripts/settings.py show [word]`: the entries, with options and the exact way to change each.
+- `python3 scripts/settings.py validate <key> <value>`: exit 0, or the reason the value is refused.
+- `/agentkit:settings <question>` in Claude Code: "can I change X?" answered from the registry with its options; it prints the `gh variable set` command or proposes the caller edit as a PR, and never invents a setting.
 
 ## Dependencies, `/board` and `/task`
 
