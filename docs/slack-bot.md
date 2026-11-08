@@ -110,6 +110,18 @@ status without `action:required`, or closes, every card it has is edited to the 
 To post a card by hand (for example to test), send the same JSON to `scripts/card.py post` with `SLACK_BOT_TOKEN` and
 `SLACK_CHANNEL` set; add `"comments": [...]` to derive the ask, or `"ask"` and `"options"` to give them.
 
+## Fewer cards (chief of staff)
+
+Before a card is posted, `scripts/card.sh` holds it back in two cases. It never answers for anyone.
+
+- **Already answered.** A person with write access (or a signed Slack reply record) commented on the issue after the
+  kit's latest ask, and not a `/` command: the reply job has it, so no card.
+- **Same blocker chain.** Another waiting issue with a live card has the same parent issue (sub-issues) or a
+  `blocked_by` issue in common: that card gets a line `Also affects #n` (same ask, same buttons, which answer its own
+  issue) and this issue a hidden marker pointing at it. When the card's own issue stops waiting, its card is resolved
+  as usual and each folded issue that still waits gets its own card (or folds into another). When a folded issue stops
+  waiting first, the shared card is left alone; its `Also affects` line may name it until the card is next rebuilt.
+
 ## Checks on every click
 
 The bot maps the Slack user to a login, asks GitHub for that login's permission **now**, and refuses unless it is write,
