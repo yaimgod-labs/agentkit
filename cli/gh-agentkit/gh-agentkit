@@ -422,8 +422,10 @@ doctor_bot() {
     && ok "secret SLACK_BOT_TOKEN" || bad "secret SLACK_BOT_TOKEN missing: no cards (gh secret set SLACK_BOT_TOKEN --repo $repo)"
   # upgrade sets the variables before its caller PR merges: until then clicks and cards do nothing
   local merge="merge the gh agentkit upgrade $repo PR"
-  grep -q 'types: \[agentkit-slack-reply\]' <<<"${3:-}" && grep -q '^  repository_dispatch:' <<<"${3:-}" \
+  grep -qE 'types: \[.*agentkit-slack-reply' <<<"${3:-}" && grep -q '^  repository_dispatch:' <<<"${3:-}" \
     && ok "caller takes the bot's repository_dispatch" || warn "the caller has no repository_dispatch trigger for agentkit-slack-reply: button clicks do nothing ($merge)"
+  grep -qE 'types: \[.*agentkit-slack-task' <<<"${3:-}" \
+    && ok "caller takes the bot's Add task" || warn "the caller has no repository_dispatch trigger for agentkit-slack-task: + Add task does nothing ($merge)"
   grep -q '/\.github/workflows/card\.yml@' <<<"${3:-}" \
     && ok "caller has the card job" || warn "the caller has no card job: no cards are posted ($merge)"
   # the dispatch job's own block: from its name to the next job

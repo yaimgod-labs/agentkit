@@ -5,6 +5,9 @@
 # In slack-bot mode the reply arrives as a repository_dispatch event `agentkit-slack-reply` from the kit's Slack bot
 # (client_payload: {issue, text, login}); `login` is the GitHub login the bot mapped the Slack user to. It is checked
 # for write access here again, and the workflow writes the signed record of the reply (slackrec.py).
+# The `task` job takes the bot's `+ Add task` (repository_dispatch `agentkit-slack-task`, client_payload:
+# {title, body, login}): the same login check, then a new issue by the kit's App, filed straight into status:refining
+# (what triage.yml gives a new issue by a trusted author), its body ending in "Filed by @login from Slack."
 name: agentkit-reply
 
 on:
@@ -22,6 +25,7 @@ permissions: {}
 
 jobs:
   reply:
+    if: github.event.action != 'agentkit-slack-task'
     runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}
@@ -135,3 +139,70 @@ jobs:
           fi
           printf '%s\n' "agentkit: could not apply your reply ($RUN). Needs a human." "" \
             "Answer with the Comment button on this issue's card in Slack." | gh issue comment "$N" --repo "$REPO" --body-file -
+
+  # the Slack bot's `+ Add task`: a new issue, filed for a person with write access
+  task:
+    if: github.event_name == 'repository_dispatch' && github.event.action == 'agentkit-slack-task'
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      REPO: ${{ github.repository }}
+    steps:
+      # the payload is read from the event file with jq, never through an expression
+      - id: payload
+        name: Check the payload
+        run: |
+          login=$(jq -r '.client_payload.login // ""' "$GITHUB_EVENT_PATH")
+          [[ $login =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || { echo "::error::the payload names no GitHub login"; exit 1; }
+          # the bot's limits again: a one-line title of at most 256 characters, a body of at most 3000
+          jq -e '(.client_payload.title | type == "string" and test("\\S") and length <= 256 and (test("[\\r\\n]") | not))
+                 and ((.client_payload.body // "") | type == "string" and length <= 3000)' "$GITHUB_EVENT_PATH" >/dev/null \
+            || { echo "::error::the task's title or body is missing or too long"; exit 1; }
+          echo "login=$login" >>"$GITHUB_OUTPUT"
+
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-issues: write  # the new issue and its status
+          permission-actions: read  # Load agentkit reads this run's referenced workflows
+
+      - name: Load agentkit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: reply.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+
+      # the bot checked the person's write access; the workflow checks it again
+      - id: trust
+        continue-on-error: true  # an untrusted login is ignored, not an error
+        uses: ./.agentkit-kit/.github/actions/trusted
+        with:
+          logins: ${{ steps.payload.outputs.login }}
+          token: ${{ steps.app.outputs.token }}
+          bot: ${{ steps.app.outputs.app-slug }}[bot]
+          require-all: "true"
+
+      - name: File the issue
+        if: steps.trust.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          LOGIN: ${{ steps.payload.outputs.login }}
+        run: |
+          title=$(jq -r .client_payload.title "$GITHUB_EVENT_PATH")
+          body=$(jq -r --arg login "$LOGIN" '(.client_payload.body // "" | sub("\\s+$"; "")) as $b
+                   | (if $b == "" then "" else $b + "\n\n" end) + "Filed by @\($login) from Slack."' "$GITHUB_EVENT_PATH")
+          # status:refining in the same call that creates it: what triage.yml gives a new issue by a trusted author, so
+          # refine picks it up, and triage (which then finds a status) never sets it a second time
+          url=$(printf '%s\n' "$body" | gh issue create --repo "$REPO" --title "$title" --body-file - --label status:refining)
+          # the title is never echoed: a log line can carry workflow commands
+          echo "filed $url for $LOGIN"

@@ -5,18 +5,20 @@ The bot is one container with no inbound port (Slack Socket Mode connects outbou
 
 ## Slack app
 
-Create a Slack app with Socket Mode on and Interactivity on, **no event subscriptions**, and one bot scope: `chat:write`
+Create a Slack app with Socket Mode on and Interactivity on, one bot event (`app_home_opened`, for the board; see
+[App Home, Add task and nudges](#app-home-add-task-and-nudges)), and one bot scope: `chat:write`
 (no `chat:write.public`). Keep two tokens: the bot token (`xoxb-…`) and an app-level token (`xapp-…`, scope
 `connections:write`). Use a **private** channel for the cards and invite the bot; who may act is decided by `users.json`,
 not by who can see the channel.
 
 ## GitHub App
 
-Give the bot **its own GitHub App** if you can: it needs only `contents: write` (for `repository_dispatch`) and
-`metadata: read` (the permission check). The workflows sign the reply record with the lifecycle App's key, so the bot
+Give the bot **its own GitHub App** if you can: it needs only `contents: write` (for `repository_dispatch`),
+`issues: read` (the board and the nudge count) and `metadata: read` (the permission check). The workflows sign the reply record with the lifecycle App's key, so the bot
 never holds that key. Install it only on the repos in `AGENTKIT_REPOS`, and protect the default branch there (rulesets),
 since `contents: write` can push to an unprotected branch. The bot mints a token per click for that one repo, limited to
-those two permissions.
+`contents: write` and `metadata: read`; for reads (the board, nudges) a token limited to `issues: read` and
+`metadata: read`.
 
 ## Server files (never in a repo)
 
@@ -32,12 +34,15 @@ those two permissions.
 
 The image pins its base by digest and installs from a hashed lockfile (`bot/requirements.txt`, made from
 `requirements.in` with `uv pip compile --universal --python-version 3.12 --generate-hashes`). It runs as a non-root
-user and works on a read-only filesystem.
+user and works on a read-only filesystem, apart from one writable volume for the nudge settings and history
+(`/data`, below). It is built from the kit's root (it copies the kit's `scripts/card.py`, `scripts/reply.py` and
+`plugins/agentkit/scripts/board.py`, so the board's cards and order are the workflows' own); `bot/Dockerfile.dockerignore`
+keeps the build context to those files.
 
 ```yaml
 services:
   agentkit-bot:
-    build: ./bot
+    build: {context: /srv/agentkit, dockerfile: bot/Dockerfile}  # a checkout of the kit
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
@@ -49,6 +54,11 @@ services:
       USERS_FILE: /run/secrets/users_json
       SLACK_BOT_TOKEN_FILE: /run/secrets/slack_bot_token
       SLACK_APP_TOKEN_FILE: /run/secrets/slack_app_token
+      AGENTKIT_PREFS: /data/prefs.json      # the default
+      AGENTKIT_KIT_BOT: your-kit-app-slug   # the kit's lifecycle App (its slug, without [bot])
+      AGENTKIT_SLACK_APP_ID: A0123456789    # this Slack app's App ID
+    volumes:
+      - /srv/agentkit-bot/data:/data        # owned by uid 10001
     secrets: [app_pem, users_json, slack_bot_token, slack_app_token]
 secrets:
   app_pem: {file: /srv/agentkit-bot/app.pem}
@@ -59,7 +69,7 @@ secrets:
 
 **Prebuilt image.** `.github/workflows/bot-image.yml` builds the image on a GitHub-hosted runner, scans it with Trivy
 (a fixable HIGH or CRITICAL finding fails the run), and on `main` pushes it to
-`ghcr.io/<owner>/<repo>-bot` with a build-provenance attestation. Instead of `build: ./bot`, a server can use
+`ghcr.io/<owner>/<repo>-bot` with a build-provenance attestation. Instead of `build:`, a server can use
 `image: ghcr.io/<owner>/<repo>-bot@sha256:<digest>` and check it first with
 `gh attestation verify oci://ghcr.io/<owner>/<repo>-bot@sha256:<digest> --repo <owner>/<repo>`. The first push creates a
 private package: make it public, or log the server in to GHCR. Until the first run on `main`, build the image on the server.
@@ -106,3 +116,49 @@ The bot maps the Slack user to a login, asks GitHub for that login's permission 
 maintain or admin. `reply.yml` checks the login again, then writes a **signed record** of the reply on the issue
 (`scripts/slackrec.py`, HMAC under the App key). `people.sh` and the review gate count that record as the person's own
 comment, so retry, guidance and RFC accept/reject work from Slack. A bot comment without a valid signature never counts.
+
+## App Home, Add task and nudges
+
+**The board.** The bot's Home tab shows, per repo in `AGENTKIT_REPOS` where the person's mapped login has write access
+now: **Waiting on you** (open `action:required` issues, oldest first, each as its card with the same buttons),
+**In progress** (`status:in-progress`, `status:review`), **Next up** (`status:ready` in the dispatcher's order from
+`board.py`, without the Projects `Rank` and the debt quota; the ones the dispatcher never takes come last, saying why)
+and **Done this week** (closed as completed in the last 7 days). Sections are capped to fit Slack's 100 blocks, with an
+"and N more" link to the GitHub search. A Slack user who is not in `users.json` sees one line with their member ID to
+send the owner. A button on the board works as on a card: the same checks, the same `agentkit-slack-reply`.
+A waiting item's question comes only from the kit's own comments, so set `AGENTKIT_KIT_BOT` to the kit App's slug;
+without it the board shows "Needs your input" and the status's buttons.
+
+**+ Add task.** Each repo on the board has a `+ Add task` button: a modal (title, details) sends
+`repository_dispatch` `agentkit-slack-task` `{title, body, login}` after the same mapping and write check as a click.
+The `task` job in `reply.yml` checks the login, the lengths (title one line, at most 256 characters; body at most 3000)
+and the person's write access again, then files the issue with the kit's App token, its body ending in
+"Filed by @login from Slack.", with `status:refining`, so refine picks it up as it does a trusted author's new issue.
+The project's caller needs the new event type: run `gh agentkit upgrade owner/repo`.
+
+**Nudges.** Every 10 minutes the bot counts, per mapped person, the open `action:required` issues across the repos they
+can write to. With one or more, it sends one DM, "N waiting", with a link to the Home tab (the link needs
+`AGENTKIT_SLACK_APP_ID`). At most 2 a day, never twice within 4 hours, and only inside the person's nudge hours. The
+settings live in `AGENTKIT_PREFS` (default `/data/prefs.json`), keyed by Slack user id, with the settings registry's
+keys; the file also keeps when each nudge was sent, and is written atomically:
+
+```json
+{"prefs": {"U0123456789": {"nudge": "on", "nudge-hours": "09-20", "nudges-per-day": 2, "timezone": "Europe/Berlin"}},
+ "history": {}}
+```
+
+Defaults: `nudge` `on`, `nudge-hours` `09-20`, `nudges-per-day` 2 (2 is also the most), `timezone` `UTC`. The bot reads
+the file on every round, so an edit applies without a restart. If the file cannot be read or written (no volume, a
+broken edit), the bot logs it and sends no nudges until it is fixed and the bot restarted; the board and clicks are
+unaffected.
+
+**What the owner changes to turn these on:**
+
+1. Slack app settings: **Event Subscriptions** on, bot event `app_home_opened` (Socket Mode delivers it; no request URL).
+   **App Home**: Home tab on, and Messages tab on (the nudge is a message there; "Allow users to send messages" may stay
+   off). No new scope: `chat:write` posts the nudge to a person's DM with the app. Reinstall the app if Slack asks.
+2. The bot's GitHub App: add the repository permission **Issues: read**, and accept the new permission on each
+   installation.
+3. Server: a writable volume at `/data` owned by uid 10001, and the env `AGENTKIT_KIT_BOT` and `AGENTKIT_SLACK_APP_ID`
+   (both optional), as in the compose file above. The build context is now the kit's root.
+4. Redeploy the bot (rebuild or pull the new image, then restart the container).

@@ -1,9 +1,11 @@
-"""bot/core.py and scripts/card.py: trust mapping, button values, the dispatch body, the card and its length lint."""
+"""bot/core.py and scripts/card.py: trust mapping, button values, the dispatch body, the card and its length lint,
+the App Home board, the Add task dispatch and the nudge rules."""
 import json, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bot")); sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "plugins/agentkit/scripts"))
 import core, card  # noqa: E402
 
 fails = 0
@@ -129,6 +131,119 @@ expect("resolve edits only exact marker comments", card.resolve(res_issue) == 1 
 expect("resolved card has no buttons and says the new status", len(sent[0][1]["blocks"]) == 1 and "now changes-requested" in sent[0][1]["text"])
 expect("closed as completed reads Closed as done", card.outcome({"state": "CLOSED", "stateReason": "COMPLETED"}) == "Closed as done")
 card.slack = real_slack
+
+# App Home: the board
+def iss(n, *labels, title=None):
+    return {"number": n, "title": title or f"task {n}", "labels": list(labels)}
+
+def texts(view):
+    out = []
+    for b in view["blocks"]:
+        if b["type"] == "section":
+            out.append(b["text"]["text"])
+        elif b["type"] == "context":
+            out += [e["text"] for e in b["elements"]]
+    return out
+
+cards = lambda i: card.build({**i, "repo": "o/r"})["blocks"]
+board = {"repo": "o/r", "since": "2026-11-02",
+         "waiting": [iss(3, "status:needs-info", "action:required")],
+         "in_progress": [iss(4, "status:in-progress"), iss(5, "status:review")],
+         "next": [iss(6, "status:ready")], "done": [iss(1, title="shipped <it> & more")]}
+v = core.home_view([board], cards)
+t = texts(v)
+expect("home: a home view", v["type"] == "home")
+expect("home: the four sections in order", [s.split("*")[1] for s in t if s.startswith("*") and "(" in s] ==
+       ["Waiting on you", "In progress", "Next up", "Done this week"], t)
+acts = [b for b in v["blocks"] if b["type"] == "actions"]
+expect("home: a waiting item has its card's buttons", len(acts) == 1 and acts[0]["elements"][0]["value"].startswith("o/r#3|"), acts)
+expect("home: in progress names the stage", any("#5>" in s and "review" in s for s in t), t)
+expect("home: titles are escaped", any("shipped &lt;it&gt; &amp; more" in s for s in t), t)
+addb = [b["accessory"] for b in v["blocks"] if b.get("accessory")]
+expect("home: + Add task button per repo", addb and addb[0]["action_id"] == "add_task" and addb[0]["value"] == "o/r", addb)
+expect("home: within Slack's 100 blocks", len(v["blocks"]) <= 100)
+
+big = {"repo": "o/r", "since": "2026-11-02", "waiting": [iss(n, "status:needs-info") for n in range(1, 41)],
+       "in_progress": [iss(n, "status:review") for n in range(41, 81)], "next": [iss(n, "status:ready") for n in range(81, 121)],
+       "done": [iss(n) for n in range(121, 161)]}
+built = []
+v = core.home_view([big, {**big, "repo": "o/s"}, {**big, "repo": "o/t"}], lambda i: built.append(i["number"]) or cards(i))
+t = texts(v)
+expect("home: a big board stays within 100 blocks", len(v["blocks"]) <= 100, len(v["blocks"]))
+expect("home: capped sections say how many more, with a link", any("and " in s and " more" in s and "issues?q=" in s for s in t), t)
+expect("home: only shown waiting items are built", len(built) == len([b for b in v["blocks"] if b["type"] == "actions"]), built)
+more = core.more_url("o/r", "waiting")
+expect("home: the more link searches the label", more.startswith("https://github.com/o/r/issues?q=") and "action%3Arequired" in more, more)
+expect("home: done this week searches closed as completed since", "closed%3A%3E%3D2026-11-02" in core.more_url("o/r", "done", "2026-11-02"))
+
+v = core.home_view([board], cards, sent={"o/r#3": "approve"})
+expect("home: a sent item shows what was sent instead of buttons",
+       not [b for b in v["blocks"] if b["type"] == "actions"] and any("Sent: approve" in s for s in texts(v)), texts(v))
+v = core.home_view([board], cards, notice="Filed.")
+expect("home: a notice comes first", texts(v)[0] == "Filed.", texts(v))
+v = core.home_view([{"repo": "o/r", "error": "could not read o/r (HTTP 403)"}], cards)
+expect("home: a repo that could not be read says so", any("could not read o/r" in s for s in texts(v)), texts(v))
+v = core.home_view([], cards)
+expect("home: no repos with write access says so", "write access" in texts(v)[0], texts(v))
+v = core.unmapped_view("U123")
+expect("home: an unmapped user gets one line on how to get mapped",
+       len(v["blocks"]) == 1 and "U123" in texts(v)[0] and "users.json" in texts(v)[0], v)
+
+nxt = core.next_up([iss(9), iss(8, "priority:high"), iss(7, "size:m"), iss(6)])
+expect("next up: the dispatcher's order, then what it does not take", [i["number"] for i in nxt] == [8, 6, 9, 7], nxt)
+expect("next up: an issue it does not take says why", nxt[-1].get("note") == "not taken: size:m", nxt[-1])
+
+# Add task
+body = core.task("o/r", " Fix the thing ", "details", "alice")[1]
+expect("task: dispatch body", body == {"event_type": "agentkit-slack-task",
+                                       "client_payload": {"title": "Fix the thing", "body": "details", "login": "alice"}}, body)
+expect("task: a title is needed", "title" in core.task_errors("  ", ""))
+expect("task: a long title is refused", "title" in core.task_errors("t" * 257, ""))
+expect("task: a title is one line", "title" in core.task_errors("a\nb", ""))
+expect("task: a long body is refused", "body" in core.task_errors("t", "b" * 3001))
+expect("task: a good one passes", core.task_errors("t", "b") == {})
+
+# nudges
+from datetime import datetime, timedelta, timezone
+now = datetime(2026, 11, 9, 10, 0, tzinfo=timezone.utc)
+expect("hours: 09-20", core.parse_hours("09-20") == (9, 20))
+for bad in ["9", "20-09", "00-25", "a-b", ""]:
+    try: core.parse_hours(bad); expect("hours rejected: " + bad, False)
+    except ValueError: expect("hours rejected: " + bad, True)
+expect("nudge: due by default in hours", core.due({}, {}, now, 3))
+expect("nudge: nothing waiting, no nudge", not core.due({}, {}, now, 0))
+expect("nudge: off is off", not core.due({"nudge": "off"}, {}, now, 3))
+expect("nudge: on is on", core.due({"nudge": "on"}, {}, now, 3))
+expect("nudge: hours from the registry key", not core.due({"nudge-hours": "11-12"}, {}, now, 3))
+expect("nudge: not before 09 UTC", not core.due({}, {}, now.replace(hour=8, minute=59), 3))
+expect("nudge: not at 20 UTC", not core.due({}, {}, now.replace(hour=20), 3))
+expect("nudge: hours are in the person's timezone (10 UTC is 05 in New York)", not core.due({"timezone": "America/New_York"}, {}, now, 3))
+expect("nudge: 14 UTC is 09 in New York", core.due({"timezone": "America/New_York"}, {}, now.replace(hour=14), 3))
+expect("nudge: a bad timezone falls back to UTC", core.due({"timezone": "Nowhere/Else"}, {}, now, 3))
+h1 = core.record({}, now - timedelta(hours=3))
+expect("nudge: never twice within 4 hours", not core.due({}, h1, now, 5))
+expect("nudge: again after 4 hours", core.due({}, h1, now + timedelta(hours=1), 5))
+h2 = core.record(core.record({}, now - timedelta(hours=9, minutes=30)), now - timedelta(hours=5))
+expect("nudge: at most 2 a day (local day)", not core.due({}, h2, now + timedelta(hours=5), 5))
+expect("nudge: nudges-per-day 1", not core.due({"nudges-per-day": 1}, core.record({}, now - timedelta(hours=5)), now, 5))
+expect("nudge: nudges-per-day is capped at 2", not core.due({"nudges-per-day": 9}, h2, now + timedelta(hours=5), 5))
+expect("nudge: a new day starts over", core.due({}, h2, now + timedelta(days=1), 5))
+old = core.record({"sent": [(now - timedelta(days=5)).isoformat()]}, now)
+expect("nudge: history keeps only recent sends", len(old["sent"]) == 1, old)
+expect("nudge: text says how many and links the board",
+       core.nudge_text(3, "slack://app?team=T1&id=A1&tab=home") == "3 waiting · <slack://app?team=T1&id=A1&tab=home|Open the board>")
+expect("nudge: text without a link", core.nudge_text(1, None) == "1 waiting")
+
+with tempfile.TemporaryDirectory() as d:
+    p = Path(d) / "sub" / "prefs.json"
+    expect("prefs: a missing file is empty", core.load_prefs(p) == {"prefs": {}, "history": {}})
+    p.parent.mkdir()
+    core.save_prefs(p, {"prefs": {"U1": {"nudge-hours": "08-18"}}, "history": {}})
+    expect("prefs: saved and read back", core.load_prefs(p)["prefs"]["U1"]["nudge-hours"] == "08-18")
+    expect("prefs: no temp file left", [f.name for f in p.parent.iterdir()] == ["prefs.json"], list(p.parent.iterdir()))
+    p.write_text("{oops")
+    try: core.load_prefs(p); expect("prefs: a broken file is an error, not reset", False)
+    except ValueError: expect("prefs: a broken file is an error, not reset", True)
 
 # post: a network error is retried, Slack's answer is used
 import io, os, urllib.error

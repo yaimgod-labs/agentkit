@@ -422,5 +422,44 @@
     "validate": {"regex": "[A-Za-z0-9.]*", "hint": "must be a GitHub App client id"},
     "apply": {"via": "server", "name": "GITHUB_CLIENT_ID"},
     "advanced": true
+  },
+  {
+    "key": "bot-prefs-file",
+    "scope": "project",
+    "title": "Where the Slack bot keeps people's settings",
+    "description": "Path, on a writable volume in the bot's container, of the JSON file with each person's nudge settings and history.",
+    "type": "string",
+    "default": "/data/prefs.json",
+    "options": [],
+    "other": true,
+    "validate": {"regex": "/\\S+", "hint": "must be an absolute path"},
+    "apply": {"via": "server", "name": "AGENTKIT_PREFS"},
+    "advanced": true
+  },
+  {
+    "key": "bot-kit-app",
+    "scope": "project",
+    "title": "The kit's GitHub App name, for the board",
+    "description": "The slug of the GitHub App the kit's workflows post as, so App Home items show the kit's real question. Empty: a generic line.",
+    "type": "string",
+    "default": "",
+    "options": [],
+    "other": true,
+    "validate": {"regex": "[a-z0-9-]*", "hint": "must be a GitHub App slug"},
+    "apply": {"via": "server", "name": "AGENTKIT_KIT_BOT"},
+    "advanced": true
+  },
+  {
+    "key": "bot-slack-app-id",
+    "scope": "project",
+    "title": "The Slack app's id, for nudge links",
+    "description": "The Slack app id (A…), so a nudge links straight to the bot's Home tab. Empty: the nudge has no link.",
+    "type": "string",
+    "default": "",
+    "options": [],
+    "other": true,
+    "validate": {"regex": "(A[A-Z0-9]+)?", "hint": "must be a Slack app id, A…"},
+    "apply": {"via": "server", "name": "AGENTKIT_SLACK_APP_ID"},
+    "advanced": true
   }
 ]
