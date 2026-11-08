@@ -97,6 +97,8 @@ Goal: if something annoys the owner, they ask "can I change X?" and get an answe
 
 **Registry.** `config/settings.json` in the kit lists every configurable thing, one entry each: `key`, `scope` (`user` | `project`), plain-language `title` and `description`, `type`, `default`, `options` (the common choices, plus `other` for free input), `validate` rule, and `apply` (how a change is made). It covers real knobs only: nudge hours, nudges per day, timezone, `wip`, `debt-every`, `max-rounds`, `check-timeout`, `AUTO_MERGE`, `AUTO_SPLIT`, `model`, cron times for digest and retro, and so on. A test fails if a repo variable, caller `with:` input or bot env var used by the kit is missing from the registry, so the registry cannot rot.
 
+*As built (slice 6, registry part):* `options` holds the common values and `other: true` allows free input; `apply` is `{"via": "prefs"}`, `{"via": "variable", "name": …}`, `{"via": "caller", "job": <job or list of jobs>, "input": …}` (a cron entry names its job(s) and no input), or `{"via": "server", "name": …}` for the bot's own env vars, which only the owner can change on the server. Identity and wiring entries (client id, board number, base branch, turn limits, kit ref) carry `"advanced": true` and are shown only when asked for. The coverage test (`tests/test_settings.py`) checks every `vars.X` in the kit's workflows and templates, every input of every reusable workflow the caller template uses, every cron in its `schedule:`, and every env var `bot/*.py` reads, minus tokens and keys (secrets are not settings). `scripts/settings.py` (`validate`, `show`; `load()`/`validate()` for the bot) is the one checker.
+
 **Two scopes, two ways to apply.**
 
 | Scope | Examples | Stored | Applied by |
