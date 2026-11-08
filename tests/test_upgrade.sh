@@ -74,4 +74,26 @@ IFACE=claude-slack AM=true; out=$(doctor_interface o/r SLACK_WEBHOOK_URL "action
 check "doctor clean when the mode is set up" "! grep -qE 'FAIL|warn' <<<\"\$out\""
 out=$(doctor_interface o/r SLACK_WEBHOOK_URL "action:required" "${jobs%%$'\n'*}" 2>&1)
 check "doctor warns about the missing triage job only" "grep -q 'warn  .*triage' <<<\"\$out\" && ! grep -q 'warn  .*reply' <<<\"\$out\""
+
+# --interface slack-bot: the Slack mode plus the bot's variables; the token is only ever named, never read
+check "slack-bot interface accepted" "(parse_interface slack-bot)"
+check "channel id C… valid" "valid_channel C0123ABC && valid_channel G01AB"
+check "bad channel ids refused" "! valid_channel c0123 && ! valid_channel '#general' && ! valid_channel C && ! valid_channel 'C01 X'"
+check "--card-channel given is used" "[ \"\$(card_channel o/r C0NEW </dev/null)\" = C0NEW ]"
+check "--card-channel malformed refused" "! (card_channel o/r general </dev/null) 2>/dev/null"
+var_get() { case $2 in AGENTKIT_CARD_CHANNEL) echo C0OLD ;; esac; }
+check "existing channel kept without --card-channel" "[ \"\$(card_channel o/r '' </dev/null)\" = C0OLD ]"
+var_get() { true; }
+check "no channel and no terminal refused" "! (card_channel o/r '' </dev/null) 2>/dev/null"
+gh() { case "$*" in "variable set"*) echo "$*" >>"$tmp/bvars" ;; secret*) echo "$*" >>"$tmp/secret-calls" ;; esac; }
+out=$(SLACK_BOT_TOKEN=xoxb-secret-value enable_interface o/r slack-bot C0123ABC)
+check "bot: interface variable set" "grep -qx 'variable set AGENTKIT_INTERFACE --repo o/r --body claude-slack' '$tmp/bvars'"
+check "bot: auto-merge variable set" "grep -qx 'variable set AUTO_MERGE --repo o/r --body true' '$tmp/bvars'"
+check "bot: bot variable set" "grep -qx 'variable set AGENTKIT_SLACK_BOT --repo o/r --body true' '$tmp/bvars'"
+check "bot: channel variable set" "grep -qx 'variable set AGENTKIT_CARD_CHANNEL --repo o/r --body C0123ABC' '$tmp/bvars'"
+check "bot: secret command printed" "grep -qF 'gh secret set SLACK_BOT_TOKEN --repo o/r' <<<\"\$out\""
+check "bot: secret never set or echoed" "[ ! -e '$tmp/secret-calls' ] && ! grep -q xoxb-secret-value <<<\"\$out\""
+: >"$tmp/bvars"; out=$(enable_interface o/r claude-slack "")
+check "claude-slack leaves the bot variables alone" "! grep -q 'SLACK_BOT\|CARD_CHANNEL' '$tmp/bvars'"
+
 exit $fail
