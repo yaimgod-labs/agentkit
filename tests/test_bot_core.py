@@ -47,4 +47,12 @@ expect("needs-info: Research… and Block… open modals", [e["action_id"].split
 expect("no ask falls back", "Needs your input" in nokw["text"])
 bad = dict(c); bad["blocks"] = [{"type": "section", "text": {"type": "mrkdwn", "text": "*" + "t" * 90 + "*\n" + "a" * 200 + "\n<http://a|1> <http://b|2>"}}, c["blocks"][1]]
 expect("lint flags title, ask and two links", len(card.lint(bad)) == 3, card.lint(bad))
+
+stuck = "**Stuck on:** which `library`?\n**Why I can't decide alone:** w\n**Checked:** c\n**Options:** Allow web | Use memory\n\nReply with an answer"
+expect("derive: stuck message gives ask and options", card.derive(["x", stuck]) == ("which library?", ["Allow web", "Use memory"]))
+expect("derive: recommendation gives its first line", card.derive(["<!-- agentkit:recommendation -->\n> Adopt **option A**: one file per module.\n>\n> Reasons"]) == ("Adopt option A: one file per module.", []))
+expect("derive: any other comment gives its first line", card.derive(["<!-- m -->\nagentkit: all checks passed; 1 item needs a person."]) == ("agentkit: all checks passed; 1 item needs a person.", []))
+expect("derive: nothing gives nothing", card.derive([]) == (None, []))
+c2 = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": ["status:needs-human"], "comments": [stuck]})
+expect("build uses derived ask and options", "which library?" in c2["text"] and [e["text"]["text"] for e in c2["blocks"][1]["elements"]][:2] == ["Allow web", "Use memory"])
 sys.exit(1 if fails else 0)

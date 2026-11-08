@@ -126,9 +126,9 @@ One layer before posting a Decide card:
 
 ## Mode flag and migration
 
-`AGENTKIT_INTERFACE=slack-bot` next to `claude-slack`. It does what `claude-slack` does (waiting states carry `action:required`, `AUTO_MERGE=true`, STUCK exit, etc.) except the Comment-button line and the GitHub-app subscription: cards are posted by the workflows. Retire `claude-slack` only after `slack-bot` has run cleanly on a real project for a while (not before).
+**Changed in slice 2:** one extra boolean, not a third `AGENTKIT_INTERFACE` value. `AGENTKIT_INTERFACE=claude-slack` stays the mode (agents ask through Slack, waiting states carry `action:required`, `AUTO_MERGE=true`, the STUCK exit); `AGENTKIT_SLACK_BOT=true` on top of it turns on the bot: workflows post cards (`card.yml`) and the `reply` job accepts the bot's `repository_dispatch`. A third enum value would have touched about forty checks across the workflows for no gain. Retiring the GitHub app for Slack later means removing its subscription; nothing else changes. The "use the Comment button" line in GitHub comments is left as is for now.
 
-`gh agentkit setup|upgrade --interface slack-bot` sets the variable and secrets prompts (`SLACK_BOT_TOKEN` as a repo secret for outbound cards; the app token stays on the server). `doctor` checks: bot token valid (`auth.test`), queue channel reachable, `users.json` has a mapping for every person with write access who is meant to answer, and the bot connection is up (the bot answers a `repository_dispatch` ping with a reaction on a heartbeat issue).
+Repo settings for the bot: variable `AGENTKIT_SLACK_BOT=true`, variable `AGENTKIT_CARD_CHANNEL` (the Slack channel id), secret `SLACK_BOT_TOKEN`. `gh agentkit setup|upgrade` support and `doctor` checks (bot token valid via `auth.test`, channel reachable, `users.json` mapping for every person with write access who is meant to answer, bot connection up) are still to do.
 
 ## Deploy
 

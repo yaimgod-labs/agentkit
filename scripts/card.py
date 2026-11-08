@@ -2,8 +2,9 @@
 """A Decide card for the kit's Slack bot (slack-bot interface): short, built from fields, never from raw comments.
 Python 3.9+, stdlib only.
 
-  card.py build < {"repo", "number", "title", "labels": [...], "ask"?, "options"?: [str]}
-      Prints the Slack message as JSON {"text", "blocks"}. `ask` falls back to "Needs your input". Buttons come from
+  card.py build < {"repo", "number", "title", "labels": [...], "ask"?, "options"?: [str], "comments"?: [str]}
+      Prints the Slack message as JSON {"text", "blocks"}. `ask` and `options` come from `comments` (the kit's comment bodies, oldest first; see derive()) when not given;
+      `ask` falls back to "Needs your input". Buttons come from
       reply.py's keyword table for the issue's status: a keyword without an argument is a button, one that needs an
       argument opens a modal (`Name…`), and free text is `Other…`. `options` (agent-written answers) come first.
   card.py lint < card-json
@@ -15,6 +16,7 @@ A button's value is `<owner/repo>#<n>|<text>` (text sent as the reply) or, for a
 """
 import json
 import os
+import re
 import sys
 import urllib.request
 from pathlib import Path
@@ -32,7 +34,32 @@ def clip(s, n):
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def plain(line):
+    """A markdown line as plain text for a card: no quote, heading, bold or code marks."""
+    return " ".join(line.lstrip("> #-").replace("**", "").replace("`", "").split())
+
+
+def derive(comments):
+    """(ask, options) from the kit's comments on a waiting issue, oldest first: the latest one that says what it
+    needs. A STUCK message: its `Stuck on` and `Options` lines. An RFC or research recommendation: its first line.
+    Anything else: the first line of the latest comment. Missing: (None, [])."""
+    for body in reversed(comments):
+        if body.startswith("<!-- agentkit:recommendation -->"):
+            line = next((l for l in body.splitlines()[1:] if plain(l)), "")
+            return plain(line) or None, []
+        m = re.search(r"^\*\*Stuck on:\*\* (.+)$", body, re.M)
+        if m:
+            o = re.search(r"^\*\*Options:\*\* (.+)$", body, re.M)
+            return plain(m.group(1)), [x.strip() for x in o.group(1).split(" | ")][:BUTTONS_MAX] if o else []
+        line = next((l for l in body.splitlines() if plain(l) and not l.startswith("<!--")), "")
+        if plain(line):
+            return plain(line), []
+    return None, []
+
+
 def build(issue):
+    if "comments" in issue and not issue.get("ask"):
+        issue = {**issue, **dict(zip(("ask", "options"), derive(issue["comments"])))}
     repo, n = issue["repo"], issue["number"]
     ref = f"{repo}#{n}"
     parsed = reply.parse("", issue.get("labels", []))
