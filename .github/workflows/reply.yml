@@ -282,7 +282,8 @@ jobs:
             jq -r .client_payload.question "$GITHUB_EVENT_PATH" | python3 .agentkit-kit/scripts/settings.py prompt
             echo "$eof"; } >>"$GITHUB_OUTPUT"
 
-      # the question and the registry only: no checkout, no tools, one turn, a token that can only read Actions
+      # the question and the registry only: no checkout, no tools, one turn, a token that can only read Actions.
+      # `--tools=` (empty, joined): the action drops a separate "" and the CLI then refuses to start
       - id: claude
         if: steps.trust.outcome == 'success'
         continue-on-error: true  # no answer is DMed as such below
@@ -296,7 +297,7 @@ jobs:
           claude_args: >-
             --model ${{ inputs.model }}
             --max-turns 1
-            --tools ""
+            --tools=
 
       - name: Usage
         if: always() && steps.claude.outputs.execution_file != ''
