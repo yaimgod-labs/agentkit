@@ -122,11 +122,15 @@ A click validates against the registry's rule and applies it; the card then says
 
 ## Chief of staff (last slice)
 
-One layer before posting a Decide card:
+**Changed when built:** one layer in the card job (`scripts/card.sh`, pure logic in `scripts/card.py`), before a card for issue N is posted. Checks run in this order:
 
-- **Dedup.** If another open card in the queue asks about the same blocker chain (same parent epic or same `blocked_by`), the new one is folded into it as "also affects #n" instead of a second card.
-- **No re-asking.** Before a Decide card for issue N is posted, the bot checks whether a person's comment or decision record on N or its research parent already answers a question with the same `ask` text; if so the workflow resumes with that answer and posts nothing.
-- Both are suppress-and-fold only; they never answer for the owner.
+- **No re-asking.** If a person with write access (`people.sh`, so verified Slack reply records count) commented on N after the kit's latest ask (the kit's latest comment with visible text that is not a Slack reply record), and the comment is not a `/` command, no card is posted: the reply job already has that answer. A failed read of people's comments posts the card.
+- **Dedup.** Other open `action:required` issues are read with the kit's comments. One with a **live own card** (its latest marker is its own card's, and no kit ask came after it) in the same blocker chain as N (same parent via the sub-issues API `issues/{n}/parent`, or a `dependencies/blocked_by` issue in common, compared by URL) takes N in: the oldest such card is rebuilt from what it was posted from (its issue's kit comments before its marker, so the ask and buttons stay) plus a line `Also affects #a, #b` (every waiting issue folded into it, clipped to 80 characters), and `chat.update`d. N gets a fold marker `<!-- agentkit:card channel=C ts=T of=P -->`, which `resolve` does not match.
+- **Resolving.** Only the card's own issue P resolves the shared card. After P's cards are resolved, every issue still waiting whose latest marker folds into one of them gets the same check and a card (`card.sh refold`). When a folded issue N stops waiting, the shared card is left as is: its `Also affects` line may still name N until the card is rebuilt by the next fold (the simplest correct choice; reading the card back would need `channels:history`).
+- **Races.** N's fold marker is written before the update, and P's state is read again after it: if P stopped waiting meanwhile, P's cards are resolved again and N gets its own card. The worst case is two cards for one issue, never none. Two folds at once into one card can lose one `Also affects` entry (cosmetic; the fold marker still brings that issue its own card later).
+- Only the kit's own comments count as asks and markers. A failed chain read means no fold.
+- **Left out:** matching the same `ask` text across issues (or a research parent's decision record). Text matching is fuzzy, and a wrong match would hold back a question nobody answered, which is the one failure a suppress-only layer must not have. The exact check above (a person's say on N after the ask) cannot be wrong that way.
+- Both are suppress-and-fold only; they never answer for the owner. Known limit: a person's comment that the reply job maps to no action leaves N waiting without a card.
 
 ## Mode flag and migration
 
