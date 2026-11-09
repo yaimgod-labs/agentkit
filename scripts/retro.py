@@ -7,9 +7,10 @@
 
 Cycle time is first `status:in-progress` to close; fix rounds count `status:changes-requested`;
 handovers count `reason:*` labels added since `since`, except `reason:retry` (an automatic retry);
-usage is one entry per Claude run (.github/actions/usage), summed per job.
+usage is one entry per Claude run (.github/actions/usage), summed per job. Env DEBT_LABEL (default type:debt) marks debt.
 """
 import json
+import os
 import statistics
 import sys
 from collections import Counter
@@ -57,7 +58,7 @@ def metrics(doc):
             if iso(e["created_at"]) >= since:
                 reasons[e["label"]["name"].split(":", 1)[1]] += 1
     retries = reasons.pop("retry", 0)
-    debt = sum("type:debt" in i.get("labels", []) for i in done)
+    debt = sum((os.environ.get("DEBT_LABEL") or "type:debt") in i.get("labels", []) for i in done)
     lines = [f"- **Closed:** {len(done)} ({debt} debt)",
              f"- **Cycle time** (in-progress → closed): median {statistics.median(hours):.1f} h, max {max(hours):.1f} h"
              if hours else "- **Cycle time:** no agent-built issue closed",
