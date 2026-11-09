@@ -274,6 +274,31 @@ menu = [e for b in settings.card(settings.load(), "o/r", "list?", '{"match": "li
         if b["type"] == "actions" for e in b["elements"]][0]
 expect("settings: every menu value parses", all(core.parse_pick(o["value"])[0] == "o/r"
                                               for g in menu["option_groups"] for o in g["options"]), menu)
+# answered without the model, the repo a question names, Apply all
+reg, served = settings.load(), ["o/agentkit-scratch", "o/ekg"]
+for q, want in [("what can you change?", "list"), ("what are all the setting you can change", "list"),
+                ("what changes to setting can you do", "list"), ("change my nudge hours", "nudge-hours"),
+                ("Repos the Slack bot serves", "bot-repos"), ("Tasks in flight on ekg", "wip"), ("set retro time", "retro-cron"),
+                ("nudge hours to 08-18", None), ("retro time and project timezone", None), ("change the timezone to israel", None),
+                ("why is the sky blue", None)]:
+    expect(f"quick: {q!r} -> {want}", core.quick(q, reg, served) == want, core.quick(q, reg, served))
+for q, want in [("tasks in flight on ekg", "o/ekg"), ("on o/agentkit-scratch please", "o/agentkit-scratch"),
+                ("ekg or agentkit-scratch?", None), ("the ekgs", None), ("nudge hours", None)]:
+    expect(f"named repo: {q!r} -> {want}", core.named_repo(q, served) == want, core.named_repo(q, served))
+v = settings.apply_all_value("o/r", [("timezone", "Asia/Jerusalem"), ("auto-merge", True)])
+expect("apply all: round trip", core.parse_all(v) == ("o/r", [("timezone", "Asia/Jerusalem"), ("auto-merge", "true")]), v)
+for bad in ["all|o/r|[]", "all|../r|[[\"wip\",\"3\"]]", "all|o/r|[[\"Bad\",\"3\"]]", "all|o/r|not json",
+            "all|o/r|" + json.dumps([["wip", "3"]] * 6), "set|o/r|[[\"wip\",\"3\"]]", "all|o/r|[[\"wip\",3]]"]:
+    try: core.parse_all(bad); expect("apply all: bad value rejected: " + bad, False)
+    except ValueError: expect("apply all: bad value rejected: " + bad, True)
+body = core.settings_changes("o/r", [("wip", "3"), ("retro-cron", "0 10 * * 4")], "alice", "U1")[1]
+expect("apply all: one setting event with the changes", body == {"event_type": "agentkit-slack-setting", "client_payload": {
+    "changes": [{"key": "wip", "value": "3"}, {"key": "retro-cron", "value": "0 10 * * 4"}], "login": "alice", "slack_user": "U1"}}, body)
+expect("repo menu: parses", core.parse_pick("repo|o/ekg|wip", "repo") == ("o/ekg", "wip"))
+try: core.parse_pick("pick|o/ekg|wip", "repo"); expect("repo menu: a pick is not a repo switch", False)
+except ValueError: expect("repo menu: a pick is not a repo switch", True)
+body = core.settings_ask("o/r", "q", "alice", "U1", ("D1", "1.2"), {}, None, served)[1]
+expect("settings: ask carries the repos to switch to", body["client_payload"]["repos"] == served and len(body["client_payload"]) <= 10, body)
 body = core.setting("o/r", "wip", "3", "alice", "U1")[1]
 expect("settings: apply body", body == {"event_type": "agentkit-slack-setting", "client_payload": {
     "key": "wip", "value": "3", "login": "alice", "slack_user": "U1"}}, body)
@@ -319,7 +344,7 @@ expect("nudge: text without a link", core.nudge_text(1, None) == "1 waiting")
 
 with tempfile.TemporaryDirectory() as d:
     p = Path(d) / "sub" / "prefs.json"
-    expect("prefs: a missing file is empty", core.load_prefs(p) == {"prefs": {}, "history": {}})
+    expect("prefs: a missing file is empty", core.load_prefs(p) == {"prefs": {}, "history": {}, "repo": {}})
     p.parent.mkdir()
     core.save_prefs(p, {"prefs": {"U1": {"nudge-hours": "08-18"}}, "history": {}})
     expect("prefs: saved and read back", core.load_prefs(p)["prefs"]["U1"]["nudge-hours"] == "08-18")

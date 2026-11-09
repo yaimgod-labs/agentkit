@@ -223,11 +223,12 @@ def ask_error(question):
     return None
 
 
-def settings_ask(repo, question, login, slack_user, reply_to=None, now=None, key=None):
+def settings_ask(repo, question, login, slack_user, reply_to=None, now=None, key=None, repos=None):
     """The repository_dispatch body for a question: a read-only model in the workflow picks the registry entry, and
     the workflow's answer replaces the bot's placeholder `reply_to` (DM channel, ts), or is DMed when there is none.
     `now` {key: value}: what the workflow cannot see for the answer's "Now" (the person's own settings, the bot's
-    server ones); `key`: a setting picked from the list, answered without the model."""
+    server ones); `key`: a setting picked from the list, answered without the model; `repos`: the repos the person may
+    switch a project card to."""
     p = {"question": question.strip(), "login": login, "slack_user": slack_user}
     if reply_to:
         p["slack_channel"], p["slack_ts"] = reply_to
@@ -235,14 +236,71 @@ def settings_ask(repo, question, login, slack_user, reply_to=None, now=None, key
         p["now"] = now
     if key:
         p["key"] = key
+    if repos:
+        p["repos"] = list(repos)
     return repo, {"event_type": SETTINGS_EVENT, "client_payload": p}
 
 
-def parse_pick(value):
-    """`pick|<owner/repo>|<key>` from the list's menu (settings.list_card()) -> (repo, key)."""
+def settings_changes(repo, changes, login, slack_user):
+    """The repository_dispatch body for Apply all's project settings: [(key, value)], at most 5; the workflow checks
+    admin and validates each again."""
+    return repo, {"event_type": SETTING_EVENT, "client_payload": {
+        "changes": [{"key": k, "value": v} for k, v in changes], "login": login, "slack_user": slack_user}}
+
+
+def parse_all(value):
+    """`all|<owner/repo>|<JSON [[key, value], ...]>` from Apply all (settings.apply_all_value()) -> (repo, [(key, value)])."""
+    kind, _, rest = value.partition("|")
+    repo, _, raw = rest.partition("|")
+    try:
+        changes = json.loads(raw)
+    except ValueError:
+        changes = None
+    if (kind != "all" or not REPO.match(repo) or not isinstance(changes, list) or not 1 <= len(changes) <= 5
+            or not all(isinstance(c, list) and len(c) == 2 and isinstance(c[0], str) and KEY.match(c[0])
+                       and isinstance(c[1], str) for c in changes)):
+        raise ValueError("bad Apply all")
+    return repo, [tuple(c) for c in changes]
+
+
+def named_repo(question, repos):
+    """The served repo the question names ("…on ekg", "owner/ekg"), when exactly one is named; else None."""
+    q = (question or "").lower()
+    hits = [r for r in repos if re.search(rf"(?<![\w./-])({re.escape(r.lower())}|{re.escape(r.split('/')[-1].lower())})(?![\w/-])", q)]
+    return hits[0] if len(hits) == 1 else None
+
+
+# words that ask for nothing more than the list, or than one setting by its name
+LIST_WORDS = set("""what which can could you i we change changes changing settings setting options option all the are is
+there do does list show me to of available help configure configurable adjust edit kit bot your""".split())
+FILLER = set("""change set edit update show see my the what whats is are about can i you how do to please our on for in at""".split())
+
+
+def quick(question, entries, repos=()):
+    """A question the bot answers without the model: "list" for what-can-you-change, a setting's key when the
+    question is just its name (a value, or a second setting, goes to the model); else None."""
+    words = re.findall(r"[a-z0-9]+", (question or "").lower())
+    for r in repos:  # a repo name is where, not what
+        for w in re.findall(r"[a-z0-9]+", r.lower()):
+            words = [x for x in words if x != w]
+    if words and set(words) <= LIST_WORDS and {"change", "changes", "setting", "settings", "options", "list", "help",
+                                                "configure", "configurable", "adjust", "edit"} & set(words):
+        return "list"
+    for e in entries:
+        title = re.findall(r"[a-z0-9]+", e["title"].lower())
+        n = len(title)
+        for k in range(len(words) - n + 1):
+            if words[k:k + n] == title and set(words[:k] + words[k + n:]) <= FILLER:
+                return e["key"]
+    return None
+
+
+def parse_pick(value, want="pick"):
+    """`pick|<owner/repo>|<key>` from the list's menu (settings.list_card()), or `repo|…` from a card's repo menu
+    (want="repo") -> (repo, key)."""
     kind, _, rest = value.partition("|")
     repo, _, key = rest.partition("|")
-    if kind != "pick" or not REPO.match(repo) or not KEY.match(key):
+    if kind != want or not REPO.match(repo) or not KEY.match(key):
         raise ValueError("bad settings pick")
     return repo, key
 
@@ -339,7 +397,7 @@ def nudge_text(count, link):
 
 
 def load_prefs(path):
-    """{"prefs": {slack id: prefs}, "history": {slack id: history}}. A missing file is empty; a broken one is an
+    """{"prefs": {slack id: prefs}, "history": {slack id: history}, "repo": {slack id: the owner/repo they last asked about}}. A missing file is empty; a broken one is an
     error (never silently reset: that would drop everyone's settings)."""
     try:
         data = json.loads(Path(path).read_text())
@@ -347,7 +405,7 @@ def load_prefs(path):
         data = {}
     if not isinstance(data, dict):
         raise ValueError(f"{path}: not a JSON object")
-    return {"prefs": data.get("prefs") or {}, "history": data.get("history") or {}}
+    return {"prefs": data.get("prefs") or {}, "history": data.get("history") or {}, "repo": data.get("repo") or {}}
 
 
 def save_prefs(path, data):

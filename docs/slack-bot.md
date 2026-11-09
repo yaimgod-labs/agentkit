@@ -190,15 +190,25 @@ unaffected.
 
 **Asking.** DM the bot ("can I change the working hours?"), or use **Settings** at the top of its Home tab. The DM is
 the one place the bot reads free text: only a person's own new message in their DM with it (not edits, threads or other
-bots). The bot cannot match the question itself (the server has no model key). It posts a placeholder ("⏳ Looking that
-up…") and sends `repository_dispatch` `agentkit-slack-settings` `{question, login, slack_user, slack_channel, slack_ts,
-now}` to the **first** repo in `AGENTKIT_REPOS` the person can write to (the same mapping and check as a click).
-`now` holds the values only the bot knows: the person's own settings and the bot's server ones (no secret is a
-setting). The `settings` job in `reply.yml` checks the login again, then runs Claude with only the question and the
-registry (`config/settings.json`, without how each setting is applied): no checkout, no tools, one turn, a token that
-can only read Actions. It answers `{"match": key|"list"|null, "options": [...]}` and writes no text the person sees:
-`scripts/settings.py card` keeps a known key only and only options that pass the registry's rule, words the card from
-the registry, and the card replaces the placeholder (one message; it is posted when the placeholder cannot be replaced):
+bots). What the bot can answer itself comes back at once, with no workflow: "what can you change?" (the list), and a
+message that is just a personal or server setting's name ("change my nudge hours"). The server has no model key, so
+anything else goes to a repo: the bot posts "⏳ Looking that up…" and sends `repository_dispatch`
+`agentkit-slack-settings` `{question, login, slack_user, slack_channel, slack_ts, now, key, repos}`.
+
+**Which repo.** One the message names ("…on ekg"), else the one the person last asked about (kept in the prefs file),
+else the first in `AGENTKIT_REPOS` they can write to; the one used is remembered, so nobody names it twice. A project
+card carries a repo menu while the bot serves more than one: switching reloads the card for that repo, in place, and
+remembers it. `repos` is that list; `now` holds the values only the bot knows (the person's own settings, the bot's
+server ones; no secret is a setting); `key` is a setting named exactly (or picked from the list), which skips the model.
+
+**The model.** The `settings` job in `reply.yml` checks the login again, then runs the Claude Code CLI itself (fetched
+and checked against the release manifest's checksum, about a second; `claude-code-action`'s setup took ~15 s of a
+~35 s answer) with `AGENTKIT_SETTINGS_MODEL` (default Haiku) and only the question and the registry
+(`config/settings.json`, without how each setting is applied): an empty directory, no tools, no GitHub token, one turn.
+It answers `{"list": true}` or `{"matches": [{"match": key, "options": [...]}, …]}` (at most 5, the asked value first
+in the entry's form: "Thursdays at 10" is `0 10 * * 4`, "Israel" is `Asia/Jerusalem`) and writes no text the person
+sees. `scripts/settings.py card` keeps known keys and options that pass the registry's rule, words the card from the
+registry, and the card replaces the placeholder (posted instead when it cannot be replaced):
 
 > **Nudge hours**
 > The hours (in your timezone) the bot may nudge you. …
@@ -207,16 +217,25 @@ the registry, and the card replaces the placeholder (one message; it is posted w
 > 🙋 Just for you; a click applies it at once.
 
 The value now comes from `now`, the repo's variables (`toJSON(vars)`) or the caller workflow (read with a separate
-contents:read token after the model ran); where it is not known the card shows the default. At most 3 options,
-`Other…` (a modal, validated as you type it in) where the setting allows free input, and for nudge hours a timezone
-search. A project setting links its repo. No match: "Not something I can change yet." and **File as a feature
-request**, which files the question as an issue in that repo through the `+ Add task` path. A setting only the server
-owner can change, or a cron, is explained (and `/agentkit:settings` in Claude Code named) without buttons.
+contents:read token after the model ran); where it is not known the card shows the default. Schedules read in words
+("Thursdays at 10:00 (Asia/Jerusalem) · `0 10 * * 4`"). At most 3 options, `Other…` (a modal, validated as you type it
+in) where the setting allows free input, and for nudge hours a timezone search. A project setting links its repo. No
+match: "Not something I can change yet." and **File as a feature request**, which files the question as an issue in
+that repo through the `+ Add task` path. A server setting is explained without buttons.
+
+**Several at once.** "Set the timezone to Israel and run the retro on Thursdays at 10" gets one message with a card
+per setting and **Apply all** for the values asked for: the person's own apply at once, the project's go to the
+`setting` job as one event `{changes: [{key, value}, …]}`, which sets the variables and puts every caller change into
+one pull request.
 
 "What can you change?" gets the list: the settings by group (just for you, how agents work, tests and merging,
 Slack, digest and retro, setup), each with one line on what it does, and a menu of every setting, advanced ones too.
-A pick from the menu needs no model: the bot shows a personal or server setting at once, and sends a project one as
-the same event with `key` (the workflow then skips Claude and builds that setting's card with its value now).
+
+**Timezones.** The **Project timezone** (`project-timezone`) is the repo's: a caller pull request writes `timezone:`
+under every cron line, so GitHub runs the digest, the retro and the check-ins at that local time (daylight saving
+included), and everyone's nudge hours follow it. A person's own **Your timezone** overrides it for their nudges (for
+example while travelling); not set, the bot uses the Project timezone of the repo they last asked about (read from its
+caller every 15 minutes, with the App's contents:read).
 
 **Applying.** A click is validated against the registry again, in the bot; the model never writes a setting.
 
@@ -224,8 +243,8 @@ the same event with `key` (the workflow then skips Claude and builds that settin
 |---|---|---|
 | yours (`nudge`, `nudge-hours`, `nudges-per-day`, `timezone`) | any mapped person | the bot writes `prefs.json` at once (atomically) and edits the card: "Nudge hours: 08-18 (was 09-20)." with **Undo** |
 | a repo variable (`wip`, `auto-merge`, …) | **admin** on the repo | `repository_dispatch` `agentkit-slack-setting` `{key, value, login, slack_user}`; the `setting` job checks admin and the value again, runs `gh variable set` and DMs what changed, with **Undo** |
-| a `with:` input of the caller (`model`, `max-rounds`, …) | **admin** on the repo | the same event; the job opens a PR on `.github/workflows/agentkit.yml` titled "agentkit: set <key> to <value>" and DMs the link. Merging stays the owner's call. A multi-line input (`plugins: \|`) is left to `/agentkit:settings` in Claude Code |
-| the bot's env, crons | the owner | explained only |
+| a `with:` input, a schedule or the Project timezone of the caller (`model`, `retro-cron`, `project-timezone`, …) | **admin** on the repo | the same event; the job opens a PR on `.github/workflows/agentkit.yml` titled "agentkit: set <key> to <value>" and DMs the link (a schedule: its cron line and the job's `if: github.event.schedule == '…'`, together). Merging stays the owner's call. A multi-line input (`plugins: \|`) is left to `/agentkit:settings` in Claude Code |
+| the bot's env | the owner | explained only |
 
 **What the owner changes to turn this on:**
 
