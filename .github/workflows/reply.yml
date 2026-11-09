@@ -104,6 +104,8 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           LOGIN: ${{ github.event.comment.user.login || github.event.client_payload.login }}
           AGENTKIT_BOT: ${{ steps.app.outputs.app-slug }}[bot]
+          AGENTKIT_MERGE_METHOD: ${{ vars.AGENTKIT_MERGE_METHOD }}
+          AGENTKIT_DELETE_BRANCH: ${{ vars.AGENTKIT_DELETE_BRANCH }}
           AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}  # signs the Slack reply record
         run: |
           # defense in depth: the kit never answers itself (its own stuck messages and pings land on waiting issues);
@@ -326,7 +328,7 @@ jobs:
           allowed_bots: "*"
           prompt: ${{ steps.prompt.outputs.text }}
           claude_args: >-
-            --model ${{ inputs.model }}
+            --model ${{ vars.AGENTKIT_SETTINGS_MODEL || inputs.model }}
             --max-turns 1
             --tools=
 
@@ -337,7 +339,7 @@ jobs:
         with:
           execution-file: ${{ steps.claude.outputs.execution_file }}
           job: settings
-          model: ${{ inputs.model }}
+          model: ${{ vars.AGENTKIT_SETTINGS_MODEL || inputs.model }}
 
       - name: Answer in Slack
         if: steps.trust.outcome == 'success'

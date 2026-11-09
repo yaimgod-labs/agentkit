@@ -135,13 +135,13 @@ jobs:
             Repository ${{ github.repository }}: write the agent-pipeline retro for the last ${{ inputs.days }} days.
             The numbers are in .agentkit-retro/metrics.md; use them as they are. Read the issues behind the fix rounds
             and handovers (`gh issue view N --comments`, their PRs' review comments) and find what caused them.
-            Answer with at most 3 proposed changes that would have prevented them: a CLAUDE.md line, a skill or
+            Answer with at most ${{ vars.AGENTKIT_RETRO_PROPOSALS || 3 }} proposed changes that would have prevented them: a CLAUDE.md line, a skill or
             prompt edit, a label or workflow setting (a job's model or max-turns too, when the usage numbers show
             it). For each: the change, the file, and the issues or numbers that show it.
             If nothing needs changing, say so in one line. Your answer is posted as is. Do not edit files.
           claude_args: >-
-            --model ${{ inputs.model }}
-            --max-turns 40
+            --model ${{ vars.AGENTKIT_RETRO_MODEL || inputs.model }}
+            --max-turns ${{ vars.AGENTKIT_RETRO_MAX_TURNS || 40 }}
             --allowedTools Bash(gh:*),Bash(rg:*),Read,Glob,Grep
 
       - name: Usage
@@ -151,7 +151,7 @@ jobs:
         with:
           execution-file: ${{ steps.claude.outputs.execution_file }}
           job: retro
-          model: ${{ inputs.model }}
+          model: ${{ vars.AGENTKIT_RETRO_MODEL || inputs.model }}
 
       - name: Post the retro
         env:

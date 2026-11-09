@@ -183,7 +183,7 @@ $qarg"
     fi
     # approved first: the merge closes the issue, which must not happen while it still waits (an extra Slack card)
     status "$n" status:approved
-    gh pr merge "$pr" --repo "$repo" --squash --delete-branch >/dev/null
+    "$(dirname "$0")/merge-pr.sh" "$pr" "$repo" >/dev/null
     [ -n "$p" ] || exit 0
     comment "$p" "**Research #$n recommends:**
 

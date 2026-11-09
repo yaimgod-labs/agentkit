@@ -107,6 +107,12 @@ used_vars = {v for p in files for v in re.findall(r"\bvars\.([A-Za-z0-9_]+)", p.
 var_entries = {e["apply"]["name"]: e for e in entries if e["apply"]["via"] == "variable"}
 expect("found the kit's repo variables", {"AGENTKIT_WIP", "AUTO_MERGE"} <= used_vars, used_vars)
 expect("every repo variable is in the registry", used_vars <= set(var_entries), sorted(used_vars - set(var_entries)))
+# a variable's fallback in the workflows (`vars.X || 'D'`) is the registry's default
+drift = sorted({f"{v}: workflow {d!r}, registry {var_entries[v]['default']!r}"
+                for p in files for v, q, n in re.findall(r"\bvars\.([A-Za-z0-9_]+) \|\| (?:'([^']*)'|(\d+)\b)", p.read_text(errors="ignore"))
+                for d in [q or n]
+                if v in var_entries and str(var_entries[v]["default"]).lower() != d.lower() and var_entries[v]["key"] != "integration-timeout"})
+expect("a variable's workflow fallback is its registry default", not drift, drift)
 
 # coverage: every input of every reusable workflow the caller template uses (or the variable it is passed from)
 caller = ROOT / "templates/.github/workflows/agentkit.yml"

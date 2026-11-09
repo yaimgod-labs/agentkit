@@ -142,6 +142,8 @@ jobs:
           BODY: ${{ github.event.pull_request.body }}
           PR: ${{ github.event.pull_request.number }}
           AUTO_MERGE: ${{ vars.AUTO_MERGE }}
+          AGENTKIT_MERGE_METHOD: ${{ vars.AGENTKIT_MERGE_METHOD }}
+          AGENTKIT_DELETE_BRANCH: ${{ vars.AGENTKIT_DELETE_BRANCH }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
@@ -153,7 +155,7 @@ jobs:
           .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:approved
           # merge as the gate's pass path does: nothing else ever merges a PR approved here
           [ "$AUTO_MERGE" = true ] || exit 0
-          gh pr merge "$PR" --repo "$REPO" --squash --delete-branch && exit 0
+          .agentkit-kit/scripts/merge-pr.sh "$PR" "$REPO" && exit 0
           # a failed merge hands over, the status first (Slack threads the comment under the card only once
           # action:required is there)
           .agentkit-kit/scripts/set-status.sh "$REPO" "$n" status:needs-human reason:agent-error
@@ -302,10 +304,14 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
+          # an implement run may take AGENTKIT_IMPLEMENT_TIMEOUT minutes: stuck is 30 past that, so the two never cross
+          TIMEOUT: ${{ vars.AGENTKIT_IMPLEMENT_TIMEOUT }}
         run: |
-          .agentkit-kit/scripts/stuck.sh "$REPO" 90 | while read -r n label; do
+          [[ ${TIMEOUT:-60} =~ ^[0-9]+$ ]] || TIMEOUT=60
+          STUCK=$(( ${TIMEOUT:-60} + 30 ))
+          .agentkit-kit/scripts/stuck.sh "$REPO" "$STUCK" | while read -r n label; do
             echo "#$n stuck at $label"
-            .agentkit-kit/scripts/retry.sh "$REPO" "$n" "$label" "no implement run finished within 90 min of \`$label\` (lost runner?)" </dev/null \
+            .agentkit-kit/scripts/retry.sh "$REPO" "$n" "$label" "no implement run finished within $STUCK min of \`$label\` (lost runner?)" </dev/null \
               || echo "::warning::could not retry or hand over #$n"
           done
 
