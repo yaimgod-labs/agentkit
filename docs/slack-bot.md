@@ -15,8 +15,11 @@ not by who can see the channel.
 ## GitHub App
 
 Give the bot **its own GitHub App** if you can: it needs only `contents: write` (for `repository_dispatch`),
-`issues: read` (the board and the nudge count) and `metadata: read` (the permission check). The workflows sign the reply record with the lifecycle App's key, so the bot
-never holds that key. Install it only on the repos in `AGENTKIT_REPOS`, and protect the default branch there (rulesets),
+`issues: read` (the board and the nudge count) and `metadata: read` (the permission check), nothing else. The workflows sign the reply record with the lifecycle App's key, so the bot
+never holds that key. Set the repo variable `AGENTKIT_SLACK_BOT_APP` to this App's slug: the workflows act only on a
+Slack event (`repository_dispatch`) sent by `<slug>[bot]`, since anyone with write access can send one and name
+someone else in it. If the bot shares the lifecycle App instead, leave the variable unset; the bot's key can then do
+everything the lifecycle App can. Install it only on the repos in `AGENTKIT_REPOS`, and protect the default branch there (rulesets),
 since `contents: write` can push to an unprotected branch. The bot mints a token per click for that one repo, limited to
 `contents: write` and `metadata: read`; for reads (the board, nudges) a token limited to `issues: read` and
 `metadata: read`.
@@ -60,7 +63,7 @@ services:
       AGENTKIT_KIT_BOT: your-kit-app-slug   # the kit's lifecycle App (its slug, without [bot])
       AGENTKIT_SLACK_APP_ID: A0123456789    # this Slack app's App ID
     volumes:
-      - /srv/agentkit-bot/data:/data        # owned by uid 10001
+      - /srv/agentkit-bot/data:/data        # writable by the container's uid 10001 (see below)
     secrets: [app_pem, users_json, slack_bot_token, slack_app_token]
 secrets:
   app_pem: {file: /srv/agentkit-bot/app.pem}
@@ -75,8 +78,12 @@ secrets:
 `image: ghcr.io/<owner>/<repo>-bot@sha256:<digest>` and check it first with
 `gh attestation verify oci://ghcr.io/<owner>/<repo>-bot@sha256:<digest> --repo <owner>/<repo>`. The first push creates a
 private package: make it public, or log the server in to GHCR. Until the first run on `main`, build the image on the server.
+A release tag (`v1.2.3`) gets its own image (`:v1.2.3`) and its digest and the verify line in its release notes. The
+image pushed is the one Trivy scanned: the workflow builds once.
 
-Secret files must be readable by uid 10001. Never enable debug logging for Bolt or the Slack SDK: it logs payloads.
+Secret files must be readable, and `/data` writable, by the container's uid 10001. With rootful Docker that is host uid
+10001 (`chown 10001:10001`). Under rootless Docker it is a mapped host uid: the start of your range in `/etc/subuid`
+plus 10000 (container uid 0 is you, uid 1 the range's start). Never enable debug logging for Bolt or the Slack SDK: it logs payloads.
 
 ## Turn it on for a repo
 
@@ -173,7 +180,7 @@ unaffected.
    off). No new scope: `chat:write` posts the nudge to a person's DM with the app. Reinstall the app if Slack asks.
 2. The bot's GitHub App: add the repository permission **Issues: read**, and accept the new permission on each
    installation.
-3. Server: a writable volume at `/data` owned by uid 10001, and the env `AGENTKIT_KIT_BOT` and `AGENTKIT_SLACK_APP_ID`
+3. Server: a writable volume at `/data` (the container's uid 10001; see [Run](#run)), and the env `AGENTKIT_KIT_BOT` and `AGENTKIT_SLACK_APP_ID`
    (both optional), as in the compose file above. The build context is now the kit's root.
 4. Redeploy the bot (rebuild or pull the new image, then restart the container).
 
