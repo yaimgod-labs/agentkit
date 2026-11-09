@@ -7,6 +7,7 @@ owner/repo allowlist); optional AGENTKIT_PREFS (nudge settings and history, defa
 AGENTKIT_KIT_BOT (the kit App's slug: its comments give a waiting item on the board its question) and
 AGENTKIT_SLACK_APP_ID (this Slack app's id: the nudge links to the Home tab). Never turn on debug logging of Bolt or
 the Slack SDK: it logs payloads."""
+import http.client
 import json
 import logging
 import os
@@ -57,12 +58,23 @@ log = logging.getLogger("agentkit-bot")
 
 
 def gh(method, path, token, body=None):
-    req = urllib.request.Request("https://api.github.com" + path, method=method,
-                                 data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        raw = r.read()
-    return json.loads(raw) if raw else {}
+    # a dropped connection (RemoteDisconnected, a reset, a timeout) is tried again, up to 3 times, for a read and for
+    # minting a token. Never for a dispatch: the drop may have come after GitHub took it, and a retry would send it twice
+    tries = 3 if method == "GET" or path.endswith("/access_tokens") else 1
+    for attempt in range(1, tries + 1):
+        req = urllib.request.Request("https://api.github.com" + path, method=method,
+                                     data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                raw = r.read()
+            return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError:
+            raise  # GitHub answered: retrying does not change the answer
+        except (urllib.error.URLError, ConnectionError, TimeoutError, http.client.HTTPException):
+            if attempt == tries:
+                raise
+            time.sleep(attempt)
 
 
 def install_token(repo, permissions):
