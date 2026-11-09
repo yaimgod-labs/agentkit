@@ -117,9 +117,7 @@ def show(entries, query=""):
 # --- asking from Slack -------------------------------------------------------------------------------------------
 
 NO_MATCH = "Not something the kit can change yet."
-# the timezone choice offered next to a person's hours (each must pass validate())
-ZONES = ("UTC", "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles", "Asia/Kolkata",
-         "Asia/Tokyo", "Australia/Sydney")
+ASK_ONE = "Ask about one to change it, like “change my nudge hours”."
 PROMPT = """You help a person change the settings of agentkit, a GitHub Actions agent kit. Below are the kit's \
 settings registry (one JSON object per line) and the person's question. Pick the one entry the question is about, if any.
 
@@ -127,7 +125,8 @@ Answer with exactly one JSON object and nothing else:
 {"match": "<the entry's key>" or null, "answer": "<one short sentence for the person, at most 160 characters>", \
 "options": [<up to 3 values to offer, from the entry's options or of the same form>]}
 
-- match: null when no entry fits. Prefer an entry without "advanced" unless the question names it.
+- match: "list" when the person asks what can be changed in general (all the settings, not one); null when no \
+entry fits. Prefer an entry without "advanced" unless the question names it.
 - answer: plain words, no keys or variable names. For a match say yes and what it changes, then ask which value \
 (for example "Yes: when the bot may nudge you. For which hours?").
 - options: the values the question hints at first, else the entry's own options; [] for no match.
@@ -210,9 +209,16 @@ def card(entries, repo, question, result):
     d = parse_answer(result or "")
     e = find(entries, d["match"]) if isinstance(d.get("match"), str) else None
     head = "*" + esc(clip(question, 80)) + "*"
+    if d.get("match") == "list":
+        def titles(scope):
+            return ", ".join(t["title"] for t in entries if t["scope"] == scope and not t.get("advanced"))
+        return {"text": "What I can change", "blocks": [
+            _section(f"{head}\n*Just for you:* {esc(titles('user'))}\n*For the project* (admin): {esc(titles('project'))}"),
+            _context(esc(ASK_ONE))]}
     if e is None:
         return {"text": NO_MATCH, "blocks": [_section(head + "\n" + NO_MATCH), {"type": "actions", "elements": [
-            _button("File as a feature request", "setting_feature", f"feature|{repo}|{clip(question, 256)}")]}]}
+            _button("File as a feature request", "setting_feature", f"feature|{repo}|{clip(question, 256)}")]},
+            _context(esc("Ask “what can you change?” for the list."))]}
     answer = clip(d["answer"] if isinstance(d.get("answer"), str) and d["answer"].strip() else e["title"] + ".", 160)
     blocks = [_section(head + "\n" + esc(answer))]
     a = e["apply"]
@@ -227,14 +233,17 @@ def card(entries, repo, question, result):
     if e.get("other"):
         els.append(_button("Other…", "setting_other", value(repo, e["key"], "")))
     tz = next((t for t in entries if t["type"] == "timezone" and t["scope"] == "user"), None)
-    if e["type"] == "hours" and e["scope"] == "user" and tz:
-        els.append({"type": "static_select", "action_id": "setting_select",
-                    "placeholder": {"type": "plain_text", "text": tz["title"]},
-                    "options": [{"text": {"type": "plain_text", "text": z}, "value": value(repo, tz["key"], z)} for z in ZONES]})
+    actions = {"type": "actions", "elements": els}
+    zone_block = f"zone|{repo}|{tz['key']}" if tz else ""
+    if e["type"] == "hours" and e["scope"] == "user" and tz and len(zone_block) <= 255:
+        # every timezone, searched as the person types: the bot answers from the block id (repo and key)
+        actions["block_id"] = zone_block
+        els.append({"type": "external_select", "action_id": "setting_zone", "min_query_length": 2,
+                    "placeholder": {"type": "plain_text", "text": tz["title"] + " (type a city)"}})
     note = {"prefs": "Just for you; applies at once.",
             "variable": f"For everyone on {repo}; needs admin access there.",
             "caller": f"Opens a pull request on {repo}'s caller workflow; merging it is yours. Needs admin access."}
-    return {"text": answer, "blocks": blocks + [{"type": "actions", "elements": els}, _context(esc(note[a["via"]]))]}
+    return {"text": answer, "blocks": blocks + [actions, _context(esc(note[a["via"]]))]}
 
 
 def changed(entry, repo, new, old):

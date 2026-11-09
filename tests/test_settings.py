@@ -221,10 +221,10 @@ expect("card: only valid options, at most 3, then Other…",
 expect("card: a button's value names repo, key and value", buttons[0]["value"] == "set|o/r|nudge-hours|08-18", buttons[0])
 expect("card: Other… carries no value yet", buttons[-1]["value"] == "set|o/r|nudge-hours|" and buttons[-1]["action_id"] == "setting_other")
 expect("card: action ids are unique", len({e["action_id"] for e in els}) == len(els), els)
-sel = [e for e in els if e["type"] == "static_select"]
-expect("card: hours come with a timezone choice", len(sel) == 1 and all(
-    o["value"].startswith("set|o/r|timezone|") and settings.validate(by_key["timezone"], o["value"].split("|", 3)[3]) is None
-    for o in sel[0]["options"]), sel)
+sel = [e for e in els if e["type"] == "external_select"]
+acts = next(b for b in msg["blocks"] if b["type"] == "actions")
+expect("card: hours come with a timezone search over every zone", len(sel) == 1 and sel[0]["action_id"] == "setting_zone"
+       and acts.get("block_id") == "zone|o/r|timezone", (sel, acts.get("block_id")))
 expect("card: every value within Slack's 2000", all(len(e.get("value", "")) <= 2000 for e in els))
 
 msg = settings.card(entries, "o/r", "how many tasks at once?", '{"match": "wip", "answer": "Yes.", "options": ["lots"]}')
@@ -239,6 +239,12 @@ expect("card: an unknown key is no match", "Not something the kit can change yet
 fb = elements(msg)
 expect("card: no match offers a feature request with the question",
        len(fb) == 1 and fb[0]["action_id"] == "setting_feature" and fb[0]["value"] == "feature|o/r|can it paint my house?", fb)
+expect("card: no match points to the list", "what can you change?" in all_text(msg), msg)
+msg = settings.card(entries, "o/r", "what can you change?", '{"match": "list", "answer": "x", "options": []}')
+expect("card: list names the person's and the project's settings, not advanced ones",
+       "Nudge hours" in all_text(msg) and "Claude model" in all_text(msg) and "Repos the Slack bot serves" in all_text(msg)
+       and not any(t["title"] in all_text(msg) for t in entries if t.get("advanced")), msg)
+expect("card: list has no buttons", not elements(msg), elements(msg))
 msg = settings.card(entries, "o/r", "x\n" * 300, "")
 expect("card: the feature request title is one line of at most 256",
        len(elements(msg)[0]["value"].split("|", 2)[2]) <= 256 and "\n" not in elements(msg)[0]["value"], elements(msg))
