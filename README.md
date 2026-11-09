@@ -71,6 +71,8 @@ Repo variables: `AGENTKIT_WIP` (2), `AGENTKIT_BASE` (PR target if not the defaul
 
 `config/settings.json` lists everything you can change, one entry each: what it does in plain words, its default, the common choices, the rule a value must pass, and how a change is applied (your own Slack bot preference, a repo variable, a `with:` input or cron in the caller, or the bot's server env). `tests/test_settings.py` fails when a repo variable, caller input, caller cron or bot env var the kit reads is missing from it.
 
+Besides the basics it covers each job's time limit, the planner's and retro's turns, a model per job (overriding the shared `model` for that job only), the merge method and branch deletion, the one automatic retry, whether a missing test script fails review, the test script's path, and how much the digest and retro list. Each is a repo variable whose unset value is the old fixed one, so nothing changes until you set it, and the workflows themselves stay as they are. The dispatcher's stuck-run sweep waits 30 minutes past the implement time limit, so raising one moves the other. Left fixed on purpose: label names, the agent branch prefix and which reviews run (workflow logic), token permissions, trust checks, tool lists and input caps (security), and the bot's 2-a-day nudge cap.
+
 - `python3 scripts/settings.py show [word]`: the entries, with options and the exact way to change each.
 - `python3 scripts/settings.py validate <key> <value>`: exit 0, or the reason the value is refused.
 - `/agentkit:settings <question>` in Claude Code: "can I change X?" answered from the registry with its options; it prints the `gh variable set` command or proposes the caller edit as a PR, and never invents a setting.

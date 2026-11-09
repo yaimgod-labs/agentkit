@@ -214,7 +214,8 @@ def card(entries, repo, question, result):
             return ", ".join(t["title"] for t in entries if t["scope"] == scope and not t.get("advanced"))
         return {"text": "What I can change", "blocks": [
             _section(f"{head}\n*Just for you:* {esc(titles('user'))}\n*For the project* (admin): {esc(titles('project'))}"),
-            _context(esc(ASK_ONE))]}
+            _context(esc(ASK_ONE + f" Plus {sum(1 for t in entries if t.get('advanced'))} advanced ones (time limits, "
+                             "turn limits, a model per job, scripts and server settings): ask about one by name."))]}
     if e is None:
         return {"text": NO_MATCH, "blocks": [_section(head + "\n" + NO_MATCH), {"type": "actions", "elements": [
             _button("File as a feature request", "setting_feature", f"feature|{repo}|{clip(question, 256)}")]},

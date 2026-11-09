@@ -32,7 +32,7 @@ jobs:
   plan:
     if: startsWith(github.event.comment.body, '/plan')
     runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ fromJSON(vars.AGENTKIT_PLAN_TIMEOUT || '30') }}
     permissions:
       contents: read  # checkout of a private repo
     concurrency:
@@ -126,8 +126,8 @@ jobs:
             Sub-issue status: ${{ vars.AGENTKIT_INTERFACE == 'claude-slack' && 'status:refining' || 'status:backlog' }}
             ${{ vars.AGENTKIT_INTERFACE == 'claude-slack' && 'Approved split: if .agentkit-plan/split.md exists, it holds the split the kit proposed and the person approved, then every reply after it. Create exactly those sub-tasks, in that order, unless a later reply changes them.' || '' }}
           claude_args: >-
-            --model ${{ inputs.model }}
-            --max-turns 60
+            --model ${{ vars.AGENTKIT_PLAN_MODEL || inputs.model }}
+            --max-turns ${{ vars.AGENTKIT_PLAN_MAX_TURNS || 60 }}
             --allowedTools Bash(gh:*),Read,Glob,Grep,Skill
 
       - name: Usage
@@ -137,7 +137,7 @@ jobs:
         with:
           execution-file: ${{ steps.claude.outputs.execution_file }}
           job: plan
-          model: ${{ inputs.model }}
+          model: ${{ vars.AGENTKIT_PLAN_MODEL || inputs.model }}
 
       # epics never carry a status. A planner that created no sub-issue hands the issue over instead, so an approved
       # split never leaves it with no status at all

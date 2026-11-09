@@ -69,7 +69,7 @@ jobs:
     # check is skipped for a label event, and refine still runs
     if: ${{ !cancelled() && needs.check.outputs.pr == '' }}
     runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ fromJSON(vars.AGENTKIT_REFINE_TIMEOUT || '20') }}
     permissions:
       contents: read  # checkout of a private repo
     concurrency:
@@ -150,7 +150,7 @@ jobs:
             Repository ${{ github.repository }}, issue #${{ github.event.issue.number }}.
             Use the agentkit:refine-issue skill on this issue. Do not edit files; your token is read-only.
           claude_args: >-
-            --model ${{ inputs.model }}
+            --model ${{ vars.AGENTKIT_REFINE_MODEL || inputs.model }}
             --max-turns ${{ inputs.max-turns }}
             --allowedTools Bash(gh:*),Bash(rg:*),Bash(git log:*),Read,Glob,Grep,Skill
 
@@ -161,7 +161,7 @@ jobs:
         with:
           execution-file: ${{ steps.claude.outputs.execution_file }}
           job: refine
-          model: ${{ inputs.model }}
+          model: ${{ vars.AGENTKIT_REFINE_MODEL || inputs.model }}
 
       - name: Apply verdict
         env:

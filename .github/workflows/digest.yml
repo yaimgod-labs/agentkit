@@ -45,13 +45,14 @@ jobs:
           SLACK: ${{ secrets.SLACK_WEBHOOK_URL }}
           STATUSES: ${{ inputs.statuses }}
           AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
+          DIGEST_LIMIT: ${{ vars.AGENTKIT_DIGEST_LIMIT }}
         run: |
           text=""
           while IFS='|' read -r label heading; do
             [ -n "$label" ] || continue
             # in the Slack mode a merge is the auto-merge's job, so "approved" is not a wait
             if [ "$label" = status:approved ] && [ "$AGENTKIT_INTERFACE" = claude-slack ]; then continue; fi
-            items=$(gh issue list --repo "$REPO" --state open --label "$label" --limit 50 --json number,title,url,updatedAt,labels \
+            items=$(gh issue list --repo "$REPO" --state open --label "$label" --limit "${DIGEST_LIMIT:-50}" --json number,title,url,updatedAt,labels \
               --jq 'sort_by(.updatedAt)[] | "• <\(.url)|#\(.number)> \(.title | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;")) — last update \(.updatedAt[:10])\([.labels[].name | select(startswith("reason:"))] | if length > 0 then " (\(join(", ")))" else "" end)"')
             if [ -n "$items" ]; then text+="*${heading:-$label}*"$'\n'"$items"$'\n\n'; fi
           done <<<"$STATUSES"
