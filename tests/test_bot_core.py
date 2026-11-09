@@ -262,6 +262,18 @@ expect("settings: a question is needed", core.ask_error("  ") and core.ask_error
 body = core.settings_ask("o/r", " can I change the hours? ", "alice", "U1")[1]
 expect("settings: ask body", body == {"event_type": "agentkit-slack-settings", "client_payload": {
     "question": "can I change the hours?", "login": "alice", "slack_user": "U1"}}, body)
+body = core.settings_ask("o/r", "Tasks in flight", "alice", "U1", ("D1", "1.2"), {"nudge": "off"}, "wip")[1]
+expect("settings: ask body with the placeholder, the bot's values and a picked key", body["client_payload"] == {
+    "question": "Tasks in flight", "login": "alice", "slack_user": "U1", "slack_channel": "D1", "slack_ts": "1.2",
+    "now": {"nudge": "off"}, "key": "wip"} and len(body["client_payload"]) <= 10, body)  # GitHub's cap: 10 keys
+expect("settings: a pick round trip", core.parse_pick("pick|o/r|wip") == ("o/r", "wip"))
+for bad in ["pick|../r|wip", "pick|o/r|Bad Key", "pick|o/r|wip|x", "set|o/r|wip", "pick|o/r"]:
+    try: core.parse_pick(bad); expect("settings: bad pick rejected: " + bad, False)
+    except ValueError: expect("settings: bad pick rejected: " + bad, True)
+menu = [e for b in settings.card(settings.load(), "o/r", "list?", '{"match": "list"}')["blocks"]
+        if b["type"] == "actions" for e in b["elements"]][0]
+expect("settings: every menu value parses", all(core.parse_pick(o["value"])[0] == "o/r"
+                                              for g in menu["option_groups"] for o in g["options"]), menu)
 body = core.setting("o/r", "wip", "3", "alice", "U1")[1]
 expect("settings: apply body", body == {"event_type": "agentkit-slack-setting", "client_payload": {
     "key": "wip", "value": "3", "login": "alice", "slack_user": "U1"}}, body)

@@ -99,6 +99,8 @@ for e in entries:
     bad = [o for o in e["options"] if settings.validate(e, o) is not None]
     expect(f"{k}: every option passes its own rule", not bad, bad)
     expect(f"{k}: at most 4 options", len(e["options"]) <= 4, e["options"])
+    expect(f"{k}: in a known group", e.get("group") in {g for g, _ in settings.GROUPS}, e.get("group"))
+    expect(f"{k}: a short summary unless advanced", e.get("advanced") or 0 < len(e.get("summary", "")) <= 60, e.get("summary"))
 
 # coverage: repo variables
 WF = ROOT / ".github/workflows"
@@ -210,20 +212,21 @@ def elements(msg):
 
 
 def all_text(msg):
-    return json.dumps(msg)
+    return json.dumps(msg, ensure_ascii=False)
 
 
 q = "Can I change the working hours? " * 5
 msg = settings.card(entries, "o/r", q, json.dumps(
-    {"match": "nudge-hours", "answer": "Yes: nudges. For which hours? " * 10, "options": ["08-18", "25-99", "10-19", "09-20", "07-16"]}))
+    {"match": "nudge-hours", "answer": "Yes: nudges.", "options": ["08-18", "25-99", "10-19", "09-20", "07-16"]}),
+    {"now": {"nudge-hours": "10-19"}})
 head = msg["blocks"][0]["text"]["text"]
-title, answer = head.split("\n")
-expect("card: the title is the question, clipped to 80", title.startswith("*Can I change") and len(title.strip("*")) <= 80, title)
-expect("card: the answer is at most 160", len(answer) <= 160, answer)
+expect("card: the setting's title, what it does and its value now, not the model's words",
+       head.startswith("*Nudge hours*\nThe hours") and "*Now:* `10-19` · default `09-20`" in head
+       and "Yes: nudges" not in all_text(msg) and "Can I change" not in all_text(msg), head)
 els = elements(msg)
 buttons = [e for e in els if e["type"] == "button"]
-expect("card: only valid options, at most 3, then Other…",
-       [b["text"]["text"] for b in buttons] == ["08-18", "10-19", "09-20", "Other…"], buttons)
+expect("card: only valid options, at most 3, the current one ticked, then Other…",
+       [b["text"]["text"] for b in buttons] == ["08-18", "10-19 ✓", "09-20", "Other…"], buttons)
 expect("card: a button's value names repo, key and value", buttons[0]["value"] == "set|o/r|nudge-hours|08-18", buttons[0])
 expect("card: Other… carries no value yet", buttons[-1]["value"] == "set|o/r|nudge-hours|" and buttons[-1]["action_id"] == "setting_other")
 expect("card: action ids are unique", len({e["action_id"] for e in els}) == len(els), els)
@@ -232,35 +235,88 @@ acts = next(b for b in msg["blocks"] if b["type"] == "actions")
 expect("card: hours come with a timezone search over every zone", len(sel) == 1 and sel[0]["action_id"] == "setting_zone"
        and acts.get("block_id") == "zone|o/r|timezone", (sel, acts.get("block_id")))
 expect("card: every value within Slack's 2000", all(len(e.get("value", "")) <= 2000 for e in els))
+expect("card: a personal setting says it is just yours", "Just for you" in all_text(msg), all_text(msg))
+msg = settings.card(entries, "o/r", "hours?", '{"match": "nudge-hours"}')
+expect("card: without the bot's values, the default (not a guessed value now)",
+       "*Default:* `09-20`" in msg["blocks"][0]["text"]["text"] and "✓" not in all_text(msg), msg["blocks"][0])
+msg = settings.card(entries, "o/r", "hours?", '{"match": "nudge-hours"}', {"now": {}})
+expect("card: a personal setting not set is its default now", "*Now:* `09-20` (the default)" in all_text(msg), all_text(msg))
 
-msg = settings.card(entries, "o/r", "how many tasks at once?", '{"match": "wip", "answer": "Yes.", "options": ["lots"]}')
-expect("card: no valid option from the model: the registry's own",
-       [b["text"]["text"] for b in elements(msg)] == ["1", "2", "3", "Other…"], elements(msg))
-expect("card: a project setting says it needs admin", "admin" in all_text(msg), all_text(msg))
-msg = settings.card(entries, "o/r", "merge by itself?", '{"match": "auto-merge", "answer": "Yes.", "options": [true]}')
+msg = settings.card(entries, "o/r", "how many tasks at once?", '{"match": "wip", "options": ["lots"]}', {"vars": {"AGENTKIT_WIP": "3"}})
+expect("card: no valid option from the model: the registry's own; a variable's value now",
+       [b["text"]["text"] for b in elements(msg)] == ["1", "2", "3 ✓", "Other…"] and "*Now:* `3`" in all_text(msg), elements(msg))
+expect("card: a project setting says it needs admin and links the repo",
+       "admin" in all_text(msg) and "<https://github.com/o/r|r>" in all_text(msg), all_text(msg))
+msg = settings.card(entries, "o/r", "merge by itself?", '{"match": "auto-merge", "options": [true]}')
 expect("card: a bool option is a true/false button", [b["value"] for b in elements(msg)] == ["set|o/r|auto-merge|true"], elements(msg))
+msg = settings.card(entries, "o/r", "channel?", '{"match": "card-channel"}', {"vars": {}})
+expect("card: an empty default reads not set", "*Now:* not set" in all_text(msg) and "default" not in msg["blocks"][0]["text"]["text"],
+       msg["blocks"][0])
+
+fixture = (ROOT / "tests/fixture-callers/current.yml").read_text()
+cv = settings.caller_value
+expect("caller value: an input there", cv("jobs:\n  dispatch:\n    uses: x\n    with:\n      debt-every: 6  # less\n", by_key["debt-every"]) == 6)
+expect("caller value: quoted text", cv('jobs:\n  retro:\n    uses: x\n    with:\n      category: "Retros"\n', by_key["retro-category"]) == "Retros")
+expect("caller value: not set is the default", cv("jobs:\n  dispatch:\n    uses: x\n    with:\n      wip: 2\n", by_key["debt-every"]) == 4)
+expect("caller value: commented out is not set", cv("jobs:\n  dispatch:\n    uses: x\n    with:\n      # debt-every: 9\n", by_key["debt-every"]) == 4)
+expect("caller value: under secrets is not an input", cv("jobs:\n  dispatch:\n    uses: x\n    secrets:\n      debt-every: 9\n", by_key["debt-every"]) == 4)
+expect("caller value: an expression is not known", cv("jobs:\n  dispatch:\n    with:\n      debt-every: ${{ vars.X }}\n", by_key["debt-every"]) is None)
+expect("caller value: the template's own", cv(fixture, by_key["debt-every"]) == 4)
+msg = settings.card(entries, "o/r", "debt?", '{"match": "debt-every"}', {"caller": "jobs:\n  dispatch:\n    with:\n      debt-every: 3\n"})
+expect("card: a caller input's value now", "*Now:* `3` · default `4`" in all_text(msg) and "3 ✓" in all_text(msg), all_text(msg))
 
 msg = settings.card(entries, "o/r", "can it paint my house?", '{"match": "paint", "answer": "Sure!", "options": ["red"]}')
-expect("card: an unknown key is no match", "Not something the kit can change yet." in msg["text"] and "Sure" not in all_text(msg), msg)
+expect("card: an unknown key is no match", msg["text"] == settings.NO_MATCH and "Sure" not in all_text(msg), msg)
 fb = elements(msg)
 expect("card: no match offers a feature request with the question",
        len(fb) == 1 and fb[0]["action_id"] == "setting_feature" and fb[0]["value"] == "feature|o/r|can it paint my house?", fb)
 expect("card: no match points to the list", "what can you change?" in all_text(msg), msg)
-msg = settings.card(entries, "o/r", "what can you change?", '{"match": "list", "answer": "x", "options": []}')
-expect("card: list names the person's and the project's settings, not advanced ones",
-       "Nudge hours" in all_text(msg) and "Claude model" in all_text(msg) and "Repos the Slack bot serves" in all_text(msg)
-       and not any(t["title"] in all_text(msg) for t in entries if t.get("advanced")), msg)
-expect("card: list has no buttons", not elements(msg), elements(msg))
+
+msg = settings.card(entries, "o/r", "what can you change?", '{"match": "list", "options": []}')
+sections = [b["text"]["text"] for b in msg["blocks"] if b["type"] == "section"]
+expect("list: one section per group, each setting on its own line with what it does",
+       len(sections) == len({e["group"] for e in entries if not e.get("advanced")})
+       and "• *Nudge hours*: The hours the bot may DM you, like 09-20" in sections[0]
+       and all(f"• *{e['title']}*: " in all_text(msg) for e in entries if not e.get("advanced"))
+       and not any(f"*{e['title']}*" in all_text(msg) for e in entries if e.get("advanced")), sections)
+expect("list: every section within Slack's 3000", all(len(t) <= 3000 for t in sections), [len(t) for t in sections])
+menu = elements(msg)
+expect("list: a menu of every setting, by group, valued pick|repo|key",
+       len(menu) == 1 and menu[0]["action_id"] == "setting_pick"
+       and sorted(o["value"] for g in menu[0]["option_groups"] for o in g["options"]) == sorted(f"pick|o/r|{k}" for k in by_key)
+       and all(len(o["text"]["text"]) <= 75 for g in menu[0]["option_groups"] for o in g["options"])
+       and sum(len(g["options"]) for g in menu[0]["option_groups"]) <= 100, menu)
+expect("list: within Slack's 50 blocks", len(msg["blocks"]) <= 50)
 msg = settings.card(entries, "o/r", "x\n" * 300, "")
 expect("card: the feature request title is one line of at most 256",
        len(elements(msg)[0]["value"].split("|", 2)[2]) <= 256 and "\n" not in elements(msg)[0]["value"], elements(msg))
 
-msg = settings.card(entries, "o/r", "which repos?", '{"match": "bot-repos", "answer": "The bot serves a list."}')
-expect("card: a server setting only explains", not elements(msg) and "restart the bot" in all_text(msg), msg)
-msg = settings.card(entries, "o/r", "digest later?", '{"match": "digest-cron", "answer": "Yes.", "options": ["0 9 * * *"]}')
+msg = settings.card(entries, "o/r", "which repos?", '{"match": "bot-repos"}', {"now": {"bot-repos": "o/a,o/b"}})
+expect("card: a server setting only explains, with its value now",
+       not elements(msg) and "restart the bot" in all_text(msg) and "AGENTKIT_REPOS" in all_text(msg)
+       and "*Now:* `o/a,o/b`" in all_text(msg), msg)
+msg = settings.card(entries, "o/r", "digest later?", '{"match": "digest-cron", "options": ["0 9 * * *"]}')
 expect("card: a cron goes to Claude Code", not elements(msg) and "/agentkit:settings" in all_text(msg), msg)
-msg = settings.card(entries, "o/r", "a <b>", '{"match": "wip", "answer": "<!channel> & co"}')
-expect("card: question and answer are escaped", "&lt;!channel&gt; &amp; co" in all_text(msg) and "<b>" not in all_text(msg))
+msg = settings.card(entries, "o/r", "a <b>", '{"match": "wip"}', {"vars": {"AGENTKIT_WIP": "<!channel> & co"}})
+expect("card: values are escaped", "&lt;!channel&gt; &amp; co" in all_text(msg) and "<!channel>" not in all_text(msg))
+expect("prompt: the model words nothing the person sees", '"answer"' not in settings.prompt(entries, "q"))
+
+# the answer replaces the bot's placeholder; a failed replace (or none named) posts
+import card as slack_client  # noqa: E402
+made, real = [], slack_client.slack
+def fake(method, payload):
+    made.append((method, payload))
+    if method == "chat.update" and payload["ts"] == "bad":
+        raise SystemExit("card.py: Slack said message_not_found")
+    return {"ts": "9.9"}
+slack_client.slack = fake
+settings.dm("U1", {"text": "t"}, "D1", "1.2")
+expect("dm: replaces the placeholder, blocks and all", made == [("chat.update", {"channel": "D1", "ts": "1.2", "blocks": [], "text": "t"})], made)
+made.clear(); settings.dm("U1", {"text": "t"}, "D1", "bad")
+expect("dm: a failed replace posts instead", [m for m, _ in made] == ["chat.update", "chat.postMessage"] and made[1][1]["channel"] == "U1", made)
+made.clear(); settings.dm("U1", {"text": "t"})
+expect("dm: no placeholder: posts", [m for m, _ in made] == ["chat.postMessage"], made)
+slack_client.slack = real
 
 # what changed, and Undo
 c = settings.changed(by_key["nudge-hours"], "o/r", "08-18", "09-20")

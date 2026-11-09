@@ -223,11 +223,28 @@ def ask_error(question):
     return None
 
 
-def settings_ask(repo, question, login, slack_user):
+def settings_ask(repo, question, login, slack_user, reply_to=None, now=None, key=None):
     """The repository_dispatch body for a question: a read-only model in the workflow picks the registry entry, and
-    the workflow DMs the answer card to the person."""
-    return repo, {"event_type": SETTINGS_EVENT,
-                  "client_payload": {"question": question.strip(), "login": login, "slack_user": slack_user}}
+    the workflow's answer replaces the bot's placeholder `reply_to` (DM channel, ts), or is DMed when there is none.
+    `now` {key: value}: what the workflow cannot see for the answer's "Now" (the person's own settings, the bot's
+    server ones); `key`: a setting picked from the list, answered without the model."""
+    p = {"question": question.strip(), "login": login, "slack_user": slack_user}
+    if reply_to:
+        p["slack_channel"], p["slack_ts"] = reply_to
+    if now is not None:
+        p["now"] = now
+    if key:
+        p["key"] = key
+    return repo, {"event_type": SETTINGS_EVENT, "client_payload": p}
+
+
+def parse_pick(value):
+    """`pick|<owner/repo>|<key>` from the list's menu (settings.list_card()) -> (repo, key)."""
+    kind, _, rest = value.partition("|")
+    repo, _, key = rest.partition("|")
+    if kind != "pick" or not REPO.match(repo) or not KEY.match(key):
+        raise ValueError("bad settings pick")
+    return repo, key
 
 
 def setting(repo, key, value, login, slack_user):

@@ -312,28 +312,47 @@ def on_task(ack, body, client, view):
 
 # --- settings: ask in a DM or from the Home tab, apply with a click -------------------------------------------------
 
-def ask(client, user, question):
-    """Send the question to the first repo in AGENTKIT_REPOS the person can write to: a read-only model there picks
-    the registry entry, and the workflow DMs the answer card back."""
-    def say(m):
-        client.chat_postMessage(channel=user, text=m)
+PLACEHOLDER = "⏳ Looking that up… the answer will replace this message in a minute or so."
+
+
+def known(user):
+    """For an answer's "Now": the values the workflow cannot see, this person's own settings and the bot's server
+    ones (none is a secret: the registry holds no secret)."""
+    try:
+        mine = prefs()["prefs"].get(user, {})
+    except PrefsBroken:
+        mine = {}
+    now = {e["key"]: mine[e["key"]] for e in REGISTRY if e["apply"]["via"] == "prefs" and e["key"] in mine}
+    now.update({e["key"]: os.environ[e["apply"]["name"]] for e in REGISTRY
+                if e["apply"]["via"] == "server" and os.environ.get(e["apply"]["name"])})
+    return now
+
+
+def ask(client, user, question, key=None, repo=None):
+    """Send the question (or `key`, a setting picked from the list) to `repo`, else to the first repo in
+    AGENTKIT_REPOS the person can write to: a read-only model there picks the registry entry, and the workflow's
+    answer replaces the placeholder posted here."""
     err = core.ask_error(question)
     if err:
-        return say(err)
+        return client.chat_postMessage(channel=user, text=err)
     if user not in USERS:
-        return say("Your Slack account is not linked to a GitHub login. Ask the owner to add you.")
-    for repo in REPOS:
+        return client.chat_postMessage(channel=user, text="Your Slack account is not linked to a GitHub login. "
+                                                          "Ask the owner to add you.")
+    held = client.chat_postMessage(channel=user, text=PLACEHOLDER)
+    reply_to = (held["channel"], held["ts"])
+    for r in [repo] if repo else REPOS:
         try:
-            token = install_token(repo, DISPATCH)
-            login, _ = core.authorize(user, USERS, permission_of(repo, token))
+            token = install_token(r, DISPATCH)
+            login, _ = core.authorize(user, USERS, permission_of(r, token))
             if login:
-                gh("POST", f"/repos/{repo}/dispatches", token, core.settings_ask(repo, question, login, user)[1])
-                log.info("settings: question sent through %s for %s", repo, login)
-                return say(f"Looking up “{core.clip(question.strip(), 120)}” (through {repo}); the answer comes "
-                           "here in a minute or two.")
+                gh("POST", f"/repos/{r}/dispatches", token,
+                   core.settings_ask(r, question, login, user, reply_to, known(user), key)[1])
+                log.info("settings: question sent through %s for %s", r, login)
+                return
         except Exception as e:
-            log.warning("settings: %s: %s", repo, problem(e))
-    say("You have write access to none of the repositories this bot serves, so I cannot look it up.")
+            log.warning("settings: %s: %s", r, problem(e))
+    client.chat_update(channel=reply_to[0], ts=reply_to[1],
+                       text="You have write access to none of the repositories this bot serves, so I cannot look it up.")
 
 
 @app.event("message")
@@ -411,6 +430,27 @@ def on_setting(ack, body, client):
     a = body["actions"][0]
     value = a.get("value") or (a.get("selected_option") or {}).get("value") or ""
     apply_setting(client, body["user"]["id"], value, body["channel"]["id"], body["message"]["ts"])
+
+
+@app.action("setting_pick")
+def on_setting_pick(ack, body, client):
+    """A setting picked from the list's menu: one whose value the bot knows (the person's own, a server one) is shown
+    at once; a project one is looked up in the repo (its variables, its caller workflow), without the model."""
+    ack()
+    user = body["user"]["id"]
+    try:
+        repo, key = core.parse_pick(body["actions"][0]["selected_option"]["value"])
+    except (KeyError, TypeError, ValueError):
+        return
+    entry = settings.find(REGISTRY, key)
+    if entry is None or repo not in REPOS:
+        return
+    if user not in USERS:
+        return client.chat_postMessage(channel=user, text="Your Slack account is not linked to a GitHub login. "
+                                                          "Ask the owner to add you.")
+    if entry["apply"]["via"] in ("prefs", "server"):
+        return client.chat_postMessage(channel=user, **settings.entry_card(REGISTRY, entry, repo, state={"now": known(user)}))
+    ask(client, user, entry["title"], key=key, repo=repo)
 
 
 @app.action("setting_other")
