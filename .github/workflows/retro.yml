@@ -27,6 +27,10 @@ on:
         description: Discussions category the retro is posted in
         type: string
         default: General
+      debt-label:
+        description: The label that marks an issue as tech debt (the same as the dispatch job's)
+        type: string
+        default: type:debt
     secrets:
       AGENTKIT_APP_KEY:
         required: true
@@ -93,6 +97,7 @@ jobs:
       - name: Count the week
         env:
           GH_TOKEN: ${{ steps.write.outputs.token }}
+          DEBT_LABEL: ${{ inputs.debt-label }}
         run: |
           mkdir -p .agentkit-retro && echo .agentkit-retro/ >>.git/info/exclude
           since=$(date -u -d "-$DAYS days" +%Y-%m-%dT%H:%M:%SZ)

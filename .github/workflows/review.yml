@@ -204,8 +204,11 @@ jobs:
           fi
           [ "$verdict" = "pass" ]
 
+  # one `integration` check in both modes, so branch protection can require it (gh-agentkit does): the project's test
+  # script, or with `suites` the suites' result, as GitHub counts a skipped required check as passed
   integration:
-    if: github.event.pull_request.head.repo.full_name == github.repository && inputs.suites == ''
+    needs: [changes, suite]
+    if: always() && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: ${{ fromJSON(vars.AGENTKIT_INTEGRATION_TIMEOUT || '45') }}
     concurrency:
@@ -214,10 +217,21 @@ jobs:
     permissions:
       contents: read
     steps:
+      # the suites the PR touched all passed; a suite it touches no file of is skipped, which passes
+      - name: Check the suites
+        if: inputs.suites != ''
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          SUITE: ${{ needs.suite.result }}
+        run: |
+          [ "$CHANGES" = success ] || { echo "::error::picking the suites ended: $CHANGES"; exit 1; }
+          case $SUITE in success | skipped) echo "suites: $SUITE" ;; *) echo "::error::a suite ended: $SUITE"; exit 1 ;; esac
       - uses: actions/checkout@v7
+        if: inputs.suites == ''
         with:
           persist-credentials: false
       - name: Run the integration tests
+        if: inputs.suites == ''
         env:
           TEST: ${{ vars.AGENTKIT_TEST_SCRIPT || '.agentkit/test.sh' }}
           REQUIRE: ${{ vars.AGENTKIT_REQUIRE_TESTS }}

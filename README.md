@@ -163,7 +163,7 @@ When a release adds labels, caller jobs or board stages, run `gh agentkit upgrad
 
 ## Monorepos and other CI
 
-By default one `integration` job runs `.agentkit/test.sh`. A repo whose parts need different machines sets `suites` on the caller's `review` job; only suites with a changed path run, each on its own `runs-on`:
+By default one `integration` job runs `.agentkit/test.sh`. A repo whose parts need different machines sets `suites` on the caller's `review` job; only suites with a changed path run, each on its own `runs-on`, and the `integration` check then passes only when every suite that ran passed (so the branch protection `setup` adds covers suites too):
 
 ```yaml
     with:

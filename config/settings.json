@@ -199,7 +199,7 @@
     "options": ["type:debt", "debt"],
     "other": true,
     "validate": {"regex": "[^\\s,][^,\\n]*", "hint": "must be one label name"},
-    "apply": {"via": "caller", "job": "dispatch", "input": "debt-label"}
+    "apply": {"via": "caller", "job": ["dispatch", "retro"], "input": "debt-label"}
   },
   {
     "key": "model",

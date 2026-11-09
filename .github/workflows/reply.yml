@@ -114,10 +114,11 @@ jobs:
           author=$(jq -r '"\(.comment.user.login // .client_payload.login // "") \(.comment.user.type // "")"' "$GITHUB_EVENT_PATH")
           if [ "${author% *}" = "$AGENTKIT_BOT" ] || [ "${author##* }" = Bot ]; then echo "#$N: a bot's comment; nothing to do"; exit 0; fi
           # the comment body is read from the event file with jq, never through an expression or one env value
-          # (one argument or env value is capped at 128 KiB on Linux; apply-reply.sh takes the text as an argument)
+          # (one argument or env value is capped at 128 KiB on Linux; apply-reply.sh takes the text as an argument).
+          # Bytes, not characters: a Hebrew letter takes 2 bytes, an emoji 4, so the message names bytes
           size=$(jq -j '.comment.body // .client_payload.text // ""' "$GITHUB_EVENT_PATH" | wc -c)
           if [ "$size" -gt 100000 ]; then
-            gh issue comment "$N" --repo "$REPO" --body "agentkit: that reply is too long (over 60000 characters); shorten it and answer again."
+            gh issue comment "$N" --repo "$REPO" --body "agentkit: that reply is too long (over 100000 bytes, about 50000 letters in Hebrew or 100000 in English); shorten it and answer again."
             exit 0
           fi
           # the issue as it is now, not as the event saw it: an earlier reply may have moved it on.

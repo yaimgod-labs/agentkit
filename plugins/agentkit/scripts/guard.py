@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""PreToolUse guard: block pushes to main/master, force pushes, hard resets,
-and file edits outside the current worktree. Exit 2 blocks the tool call."""
+"""PreToolUse guard: block pushes to main/master (and the kit's base branch, env AGENTKIT_BASE such as
+origin/develop), force pushes, hard resets, and file edits outside the current worktree. Exit 2 blocks the tool call."""
 import json, os, re, subprocess, sys
 
-PROTECTED = ("main", "master")
+PROTECTED = ("main", "master", os.environ.get("AGENTKIT_BASE", "").removeprefix("origin/").removeprefix("refs/heads/") or "main")
 
 
 def block(reason):
@@ -38,7 +38,7 @@ def check_bash(cmd, cwd):
             current = git("symbolic-ref", "--short", "HEAD", cwd=cwd)  # works on unborn branches too
             targets = [current if t == "HEAD" else t for t in targets] or [current]
             if any(t in PROTECTED for t in targets):
-                block("pushing to main/master is not allowed; push a feature branch and open a PR")
+                block("pushing to the base branch is not allowed; push a feature branch and open a PR")
 
 
 def check_path(path, root):

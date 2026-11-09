@@ -1,5 +1,5 @@
 """scripts/retro.py: a week of issues becomes cycle time, fix rounds and handover counts."""
-import json, subprocess, sys
+import json, os, subprocess, sys
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts/retro.py"
@@ -28,6 +28,16 @@ want = ["**Closed:** 2 (1 debt)", "median 3.0 h, max 4.0 h", "**Fix rounds:** 2 
         "**Claude runs** (most est. cost first): implement ×2 (m): median 40 turns, 12 min, est. $6.50, 1 failed; "
         "review-code ×1 (m): median 12 turns, 3 min, est. $0.75"]
 fails = [w for w in want if w not in out]
+# a project's own debt label (the DEBT_LABEL env): only that label counts, type:debt no longer does
+doc["issues"][0]["labels"], doc["issues"][1]["labels"] = ["type:debt"], ["debt"]
+own = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(doc), capture_output=True, text=True, check=True,
+                     env={**os.environ, "DEBT_LABEL": "debt"}).stdout
+doc["issues"][0]["labels"] = []
+none = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(doc), capture_output=True, text=True, check=True,
+                      env={**os.environ, "DEBT_LABEL": "debt"}).stdout
+want.append("DEBT_LABEL=debt: counts the debt label, not type:debt")
+if "**Closed:** 2 (1 debt)" not in own or "**Closed:** 2 (1 debt)" not in none:
+    fails.append(want[-1])
 for w in want:
     print(("FAIL: " if w in fails else "ok: ") + w)
 if fails:
