@@ -282,12 +282,16 @@ def on_task(ack, body, client, view):
     repo = view["private_metadata"]
     if repo not in REPOS:
         return publish_home(client, user, notice="This repository is not managed by this bot.")
-    token = install_token(repo, DISPATCH)
-    login, refusal = core.authorize(user, USERS, permission_of(repo, token))
-    if refusal:
-        return publish_home(client, user, notice=refusal)
-    _, payload = core.task(repo, title, text, login)
-    gh("POST", f"/repos/{repo}/dispatches", token, payload)
+    try:
+        token = install_token(repo, DISPATCH)
+        login, refusal = core.authorize(user, USERS, permission_of(repo, token))
+        if refusal:
+            return publish_home(client, user, notice=refusal)
+        gh("POST", f"/repos/{repo}/dispatches", token, core.task(repo, title, text, login)[1])
+    except Exception as e:  # the modal is already closed: say so on Home, or the person sees nothing happen
+        log.warning("task: %s: %s", repo, problem(e))
+        return publish_home(client, user, notice=f"Could not send “{core.clip(title, 80)}” to {repo} ({problem(e)}). "
+                                                 "Try again in a bit.")
     publish_home(client, user, notice=f"Sent “{core.clip(title, 80)}” to {repo}: it becomes an issue in a minute "
                                       "and goes to refinement.")
 
@@ -310,7 +314,8 @@ def ask(client, user, question):
             login, _ = core.authorize(user, USERS, permission_of(repo, token))
             if login:
                 gh("POST", f"/repos/{repo}/dispatches", token, core.settings_ask(repo, question, login, user)[1])
-                return say(f"Looking it up (through {repo}); the answer comes here in a minute or two.")
+                return say(f"Looking up “{core.clip(question.strip(), 120)}” (through {repo}); the answer comes "
+                           "here in a minute or two.")
         except Exception as e:
             log.warning("settings: %s: %s", repo, problem(e))
     say("You have write access to none of the repositories this bot serves, so I cannot look it up.")
@@ -403,18 +408,28 @@ def on_setting_other(ack, body, client):
     if entry is None:
         return
     meta = {"repo": repo, "key": key, "ch": body["channel"]["id"], "ts": body["message"]["ts"]}
+    element = {"type": "plain_text_input", "action_id": "v", "max_length": 1000}
+    if entry["type"] == "timezone":  # ~600 names: search them as you type (on_zone_options)
+        element = {"type": "external_select", "action_id": "zone", "min_query_length": 2,
+                   "placeholder": {"type": "plain_text", "text": "Type a city or region"}}
     client.views_open(trigger_id=body["trigger_id"], view={
         "type": "modal", "callback_id": "setting_value", "private_metadata": json.dumps(meta),
         "title": {"type": "plain_text", "text": "Other value"}, "submit": {"type": "plain_text", "text": "Set"},
         "blocks": [{"type": "input", "block_id": "v", "label": {"type": "plain_text", "text": core.clip(entry["title"], 48)},
                     "hint": {"type": "plain_text", "text": core.clip(entry["description"], 150)},
-                    "element": {"type": "plain_text_input", "action_id": "v", "max_length": 1000}}]})
+                    "element": element}]})
+
+
+@app.options("zone")
+def on_zone_options(ack, payload):
+    ack(options=[{"text": {"type": "plain_text", "text": z}, "value": z} for z in core.zones(payload.get("value"))])
 
 
 @app.view("setting_value")
 def on_setting_value(ack, body, client, view):
     meta = json.loads(view["private_metadata"])
-    val = (view["state"]["values"]["v"]["v"]["value"] or "").strip()
+    field = next(iter(view["state"]["values"]["v"].values()))  # typed text, or the timezone picked
+    val = (field.get("value") or (field.get("selected_option") or {}).get("value") or "").strip()
     entry = settings.find(REGISTRY, meta["key"])
     err = settings.validate(entry, val) if entry else "is not a setting"
     if err:

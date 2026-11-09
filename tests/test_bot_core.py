@@ -327,4 +327,9 @@ def flaky(req, timeout):
     return io.BytesIO(b'{"ok": true, "ts": "1.2"}')
 card.urllib.request.urlopen, card.time.sleep = flaky, lambda s: None
 expect("post retries a network error", card.post({"repo": "o/r", "number": 1, "title": "t", "labels": ["status:needs-info"]}) == "1.2" and len(calls) == 3)
+
+# the timezone picker searches every zone by part of its name
+expect("zones: a city finds its zone", "Asia/Jerusalem" in core.zones("jerus"))
+expect("zones: a space is an underscore", "America/New_York" in core.zones("new york"))
+expect("zones: at most 100 for Slack", len(core.zones("a")) == 100)
 sys.exit(1 if fails else 0)
