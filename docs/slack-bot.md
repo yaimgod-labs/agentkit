@@ -190,21 +190,33 @@ unaffected.
 
 **Asking.** DM the bot ("can I change the working hours?"), or use **Settings** at the top of its Home tab. The DM is
 the one place the bot reads free text: only a person's own new message in their DM with it (not edits, threads or other
-bots). The bot cannot match the question itself (the server has no model key), so it sends `repository_dispatch`
-`agentkit-slack-settings` `{question, login, slack_user}` to the **first** repo in `AGENTKIT_REPOS` the person can write
-to (the same mapping and check as a click), and says it is looking. The `settings` job in `reply.yml` checks the login
-again, then runs Claude with only the question and the registry (`config/settings.json`, without how each setting is
-applied): no checkout, no tools, one turn, a token that can only read Actions. It answers
-`{"match": key|null, "answer": "…", "options": [...]}`; `scripts/settings.py card` keeps a known key only and only
-options that pass the registry's rule, and the job DMs the card:
+bots). The bot cannot match the question itself (the server has no model key). It posts a placeholder ("⏳ Looking that
+up…") and sends `repository_dispatch` `agentkit-slack-settings` `{question, login, slack_user, slack_channel, slack_ts,
+now}` to the **first** repo in `AGENTKIT_REPOS` the person can write to (the same mapping and check as a click).
+`now` holds the values only the bot knows: the person's own settings and the bot's server ones (no secret is a
+setting). The `settings` job in `reply.yml` checks the login again, then runs Claude with only the question and the
+registry (`config/settings.json`, without how each setting is applied): no checkout, no tools, one turn, a token that
+can only read Actions. It answers `{"match": key|"list"|null, "options": [...]}` and writes no text the person sees:
+`scripts/settings.py card` keeps a known key only and only options that pass the registry's rule, words the card from
+the registry, and the card replaces the placeholder (one message; it is posted when the placeholder cannot be replaced):
 
-> **Can I change the working hours?** Yes: when the bot may nudge you. For which hours?
-> `09-20` · `08-18` · `10-22` · `Other…` · `Your timezone ▾`
+> **Nudge hours**
+> The hours (in your timezone) the bot may nudge you. …
+> **Now:** `08-18` · default `09-20`
+> `09-20` · `08-18 ✓` · `10-22` · `Other…` · `Your timezone ▾`
+> 🙋 Just for you; a click applies it at once.
 
-At most 3 options, `Other…` (a modal, validated as you type it in) where the setting allows free input, and for nudge
-hours a timezone choice. No match: "Not something the kit can change yet." and **File as a feature request**, which
-files the question as an issue in that repo through the `+ Add task` path. A setting only the server owner can change,
-or a cron, is explained (and `/agentkit:settings` in Claude Code named) without buttons.
+The value now comes from `now`, the repo's variables (`toJSON(vars)`) or the caller workflow (read with a separate
+contents:read token after the model ran); where it is not known the card shows the default. At most 3 options,
+`Other…` (a modal, validated as you type it in) where the setting allows free input, and for nudge hours a timezone
+search. A project setting links its repo. No match: "Not something I can change yet." and **File as a feature
+request**, which files the question as an issue in that repo through the `+ Add task` path. A setting only the server
+owner can change, or a cron, is explained (and `/agentkit:settings` in Claude Code named) without buttons.
+
+"What can you change?" gets the list: the settings by group (just for you, how agents work, tests and merging,
+Slack, digest and retro, setup), each with one line on what it does, and a menu of every setting, advanced ones too.
+A pick from the menu needs no model: the bot shows a personal or server setting at once, and sends a project one as
+the same event with `key` (the workflow then skips Claude and builds that setting's card with its value now).
 
 **Applying.** A click is validated against the registry again, in the bot; the model never writes a setting.
 

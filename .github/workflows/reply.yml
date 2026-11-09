@@ -244,8 +244,9 @@ jobs:
           # the title is never echoed: a log line can carry workflow commands
           echo "filed $url for $LOGIN"
 
-  # the Slack bot's settings question: the model only picks a registry entry and words the answer; settings.py keeps
-  # only options that pass the registry's rule, and the card goes to the person's DM
+  # the Slack bot's settings question: the model only picks a registry entry and options (none for a setting picked
+  # from the list); settings.py words the card, keeps only options that pass the registry's rule and shows the value
+  # now, and the card replaces the bot's placeholder in the person's DM
   settings:
     if: github.event_name == 'repository_dispatch' && github.event.action == 'agentkit-slack-settings'
     runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
@@ -264,7 +265,16 @@ jobs:
           [[ $user =~ ^[UW][A-Z0-9]+$ ]] || { echo "::error::the payload names no Slack user"; exit 1; }
           jq -e '.client_payload.question | type == "string" and test("\\S") and length <= 500' "$GITHUB_EVENT_PATH" >/dev/null \
             || { echo "::error::the question is missing or too long"; exit 1; }
-          { echo "login=$login"; echo "user=$user"; } >>"$GITHUB_OUTPUT"
+          # optional: the placeholder the answer replaces, a setting picked from the list, the values only the bot knows
+          ch=$(jq -r '.client_payload.slack_channel // ""' "$GITHUB_EVENT_PATH")
+          ts=$(jq -r '.client_payload.slack_ts // ""' "$GITHUB_EVENT_PATH")
+          key=$(jq -r '.client_payload.key // ""' "$GITHUB_EVENT_PATH")
+          [ -z "$ch$ts" ] || { [[ $ch =~ ^D[A-Z0-9]+$ ]] && [[ $ts =~ ^[0-9]+\.[0-9]+$ ]]; } \
+            || { echo "::error::the payload's placeholder is not a DM message"; exit 1; }
+          [ -z "$key" ] || [[ $key =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::the payload's key is not a setting key"; exit 1; }
+          jq -e '.client_payload.now | . == null or (type == "object" and all(.[]; type == "string" or type == "number" or type == "boolean"))' \
+            "$GITHUB_EVENT_PATH" >/dev/null || { echo "::error::the payload's values are not plain values"; exit 1; }
+          { echo "login=$login"; echo "user=$user"; echo "channel=$ch"; echo "ts=$ts"; echo "key=$key"; } >>"$GITHUB_OUTPUT"
 
       # one token for the whole job: Load agentkit and the permission check; the model gets nothing it can write with
       - id: app
@@ -308,7 +318,7 @@ jobs:
           require-all: "true"
 
       - id: prompt
-        if: steps.trust.outcome == 'success'
+        if: steps.trust.outcome == 'success' && steps.payload.outputs.key == ''
         run: |
           # a random delimiter, so the question cannot end the output early
           eof=EOF$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
@@ -319,7 +329,7 @@ jobs:
       # the question and the registry only: no checkout, no tools, one turn, a token that can only read Actions.
       # `--tools=` (empty, joined): the action drops a separate "" and the CLI then refuses to start
       - id: claude
-        if: steps.trust.outcome == 'success'
+        if: steps.trust.outcome == 'success' && steps.payload.outputs.key == ''
         continue-on-error: true  # no answer is DMed as such below
         uses: anthropics/claude-code-action@v1
         with:
@@ -342,23 +352,52 @@ jobs:
           job: settings
           model: ${{ vars.AGENTKIT_SETTINGS_MODEL || inputs.model }}
 
-      - name: Answer in Slack
+      # after the model, read-only: the caller workflow, for the setting's value now
+      - id: read
         if: steps.trust.outcome == 'success'
+        continue-on-error: true  # without it the card shows the default instead of the value now
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-contents: read
+
+      # also when the model or the trust check failed: the placeholder never stays the last word (a skipped trust
+      # step means the kit is not loaded, so there is nothing to answer with)
+      - name: Answer in Slack
+        if: always() && steps.trust.outcome != 'skipped' && steps.trust.outcome != ''
         env:
           EXEC: ${{ steps.claude.outputs.execution_file }}
+          TRUST: ${{ steps.trust.outcome }}
+          READ_TOKEN: ${{ steps.read.outputs.token }}
+          VARS: ${{ toJSON(vars) }}  # the repo's variables (none is a secret), for the value now
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           USER_ID: ${{ steps.payload.outputs.user }}
+          CH: ${{ steps.payload.outputs.channel }}
+          TS: ${{ steps.payload.outputs.ts }}
+          KEY: ${{ steps.payload.outputs.key }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LOGIN: ${{ steps.payload.outputs.login }}
         run: |
           result=''
-          [ -z "$EXEC" ] || result=$(jq -r '[.[] | select(.type=="result")] | last | .result // ""' "$EXEC" 2>/dev/null || true)
-          if [ -z "$result" ]; then
+          if [ -n "$KEY" ]; then
+            result=$(jq -nc --arg k "$KEY" '{match: $k, options: []}')
+          elif [ -n "$EXEC" ]; then
+            result=$(jq -r '[.[] | select(.type=="result")] | last | .result // ""' "$EXEC" 2>/dev/null || true)
+          fi
+          caller=()
+          if [ -n "$READ_TOKEN" ] && content=$(GH_TOKEN=$READ_TOKEN gh api "repos/$REPO/contents/.github/workflows/agentkit.yml" --jq .content 2>/dev/null) \
+            && base64 -d <<<"$content" >"$RUNNER_TEMP/caller.yml" 2>/dev/null; then
+            caller=("$RUNNER_TEMP/caller.yml")
+          fi
+          if [ "$TRUST" != success ]; then
+            jq -n --arg t "Not looked up: $LOGIN needs write access to $REPO." '{text: $t}'
+          elif [ -z "$result" ]; then
             jq -n --arg t "Sorry, I could not look that up this time ($RUN). Ask again in a bit." '{text: $t}'
           else
-            jq --arg result "$result" '{question: .client_payload.question, result: $result}' "$GITHUB_EVENT_PATH" \
-              | python3 .agentkit-kit/scripts/settings.py card "$REPO"
-          fi | python3 .agentkit-kit/scripts/settings.py dm "$USER_ID" >/dev/null
+            jq --arg result "$result" '{question: .client_payload.question, result: $result, now: .client_payload.now}' "$GITHUB_EVENT_PATH" \
+              | python3 .agentkit-kit/scripts/settings.py card "$REPO" "${caller[@]}"
+          fi | python3 .agentkit-kit/scripts/settings.py dm "$USER_ID" ${CH:+"$CH" "$TS"} >/dev/null
           # the question and the answer are never echoed: a log line can carry workflow commands
           echo "answered a settings question for $LOGIN"
 
