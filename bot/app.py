@@ -405,7 +405,7 @@ def apply_setting(client, user, value, ch, ts):
                          + ("I'll DM you when it is set." if via == "variable" else "I'll DM you the pull request."))
 
 
-@app.action(re.compile(r"^setting_(\d|select|undo)$"))
+@app.action(re.compile(r"^setting_(\d|select|zone|undo)$"))
 def on_setting(ack, body, client):
     ack()
     a = body["actions"][0]
@@ -439,6 +439,15 @@ def on_setting_other(ack, body, client):
 @app.options("zone")
 def on_zone_options(ack, payload):
     ack(options=[{"text": {"type": "plain_text", "text": z}, "value": z} for z in core.zones(payload.get("value"))])
+
+
+@app.options("setting_zone")
+def on_card_zone_options(ack, payload):
+    """The timezone search next to an hours answer: its block id names the repo and the key (zone|repo|key); a pick
+    is applied like any button, after the same checks."""
+    _, repo, key = (payload.get("block_id") or "||").split("|", 2)
+    ack(options=[{"text": {"type": "plain_text", "text": z}, "value": settings.value(repo, key, z)}
+                 for z in core.zones(payload.get("value"))])
 
 
 @app.view("setting_value")
