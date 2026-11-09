@@ -1,0 +1,18 @@
+# Temporary: records what github.event.schedule holds when a schedule has a timezone (the kit's caller jobs match on
+# it). Disabled and removed once read.
+name: tz-probe
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+      timezone: "Asia/Jerusalem"
+permissions: {}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          echo "schedule=[$SCHEDULE]"
+          jq -c '{schedule, timezone}' "$GITHUB_EVENT_PATH"
