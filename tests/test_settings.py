@@ -211,10 +211,16 @@ def elements(msg):
     return [e for b in msg["blocks"] if b["type"] == "actions" for e in b["elements"]]
 
 
+def core_like(v):
+    kind, repo, raw = v.split("|", 2)
+    return repo, json.loads(raw)
+
+
 def all_text(msg):
     return json.dumps(msg, ensure_ascii=False)
 
 
+fixture = (ROOT / "tests/fixture-callers/current.yml").read_text()
 q = "Can I change the working hours? " * 5
 msg = settings.card(entries, "o/r", q, json.dumps(
     {"match": "nudge-hours", "answer": "Yes: nudges.", "options": ["08-18", "25-99", "10-19", "09-20", "07-16"]}),
@@ -253,7 +259,6 @@ msg = settings.card(entries, "o/r", "channel?", '{"match": "card-channel"}', {"v
 expect("card: an empty default reads not set", "*Now:* not set" in all_text(msg) and "default" not in msg["blocks"][0]["text"]["text"],
        msg["blocks"][0])
 
-fixture = (ROOT / "tests/fixture-callers/current.yml").read_text()
 cv = settings.caller_value
 expect("caller value: an input there", cv("jobs:\n  dispatch:\n    uses: x\n    with:\n      debt-every: 6  # less\n", by_key["debt-every"]) == 6)
 expect("caller value: quoted text", cv('jobs:\n  retro:\n    uses: x\n    with:\n      category: "Retros"\n', by_key["retro-category"]) == "Retros")
@@ -295,8 +300,76 @@ msg = settings.card(entries, "o/r", "which repos?", '{"match": "bot-repos"}', {"
 expect("card: a server setting only explains, with its value now",
        not elements(msg) and "restart the bot" in all_text(msg) and "AGENTKIT_REPOS" in all_text(msg)
        and "*Now:* `o/a,o/b`" in all_text(msg), msg)
-msg = settings.card(entries, "o/r", "digest later?", '{"match": "digest-cron", "options": ["0 9 * * *"]}')
-expect("card: a cron goes to Claude Code", not elements(msg) and "/agentkit:settings" in all_text(msg), msg)
+# schedules: in words, their value now from the caller, and a click that changes them (the line and the job's if:)
+for c, w in [("0 10 * * 4", "Thursdays at 10:00"), ("0 7 * * *", "Every day at 07:00"), ("0 7 * * 1-5", "Weekdays at 07:00"),
+             ("30 8 * * 1,4", "Mondays and Thursdays at 08:30"), ("*/30 * * * *", "Every 30 minutes"), ("0 * * * *", "Every hour"),
+             ("0 9 1 * *", "0 9 1 * *"), ("bad", "bad")]:
+    expect(f"cron words: {c!r}", settings.cron_words(c) == w, settings.cron_words(c))
+expect("caller crons: the template's three", settings.caller_crons(fixture) == ["*/30 * * * *", "0 7 * * *", "0 8 * * 1"],
+       settings.caller_crons(fixture))
+expect("caller cron: by the job's if:", settings.caller_cron(fixture, by_key["retro-cron"]) == "0 8 * * 1"
+       and settings.caller_cron(fixture, by_key["digest-cron"]) == "0 7 * * *")
+expect("caller cron: the dispatcher's is the one no job names", settings.caller_cron(fixture, by_key["dispatch-cron"]) == "*/30 * * * *")
+expect("caller zone: UTC without one", settings.caller_zone(fixture) == "UTC")
+out = settings.edit_caller(fixture, by_key["retro-cron"], "0 10 * * 4")
+diff = [(a, b) for a, b in zip(fixture.splitlines(), out.splitlines()) if a != b]
+expect("schedule edit: the cron line and the retro's if:, nothing else",
+       len(out.splitlines()) == len(fixture.splitlines()) and len(diff) == 2
+       and '- cron: "0 10 * * 4"  # retro: Thursdays at 10:00' in out and "github.event.schedule == '0 10 * * 4'" in out
+       and "'0 8 * * 1'" not in out and settings.caller_cron(out, by_key["retro-cron"]) == "0 10 * * 4", diff)
+try:
+    settings.edit_caller(fixture, by_key["retro-cron"], "0 7 * * *"); expect("schedule edit: refuses another job's time", False)
+except ValueError as e:
+    expect("schedule edit: refuses another job's time", "another schedule" in str(e), str(e))
+out = settings.edit_caller(fixture, by_key["project-timezone"], "Asia/Jerusalem")
+expect("timezone edit: under every cron line", out.count('      timezone: "Asia/Jerusalem"') == 3
+       and settings.caller_zone(out) == "Asia/Jerusalem" and len(out.splitlines()) == len(fixture.splitlines()) + 3, out[:400])
+again = settings.edit_caller(out, by_key["project-timezone"], "Europe/London")
+expect("timezone edit: replaces, never stacks", again.count("timezone:") == 3 and "Asia/Jerusalem" not in again)
+both = settings.edit_caller(settings.edit_caller(fixture, by_key["project-timezone"], "Asia/Jerusalem"), by_key["retro-cron"], "0 10 * * 4")
+expect("timezone and schedule edits together", settings.caller_cron(both, by_key["retro-cron"]) == "0 10 * * 4"
+       and both.count("timezone:") == 3, both[:400])
+r = subprocess.run([sys.executable, str(SCRIPT), "card", "o/r"], input=json.dumps({"question": "retro thursday 10?",
+                   "result": '{"matches": [{"match": "retro-cron", "options": ["0 10 * * 4"]}]}'}), capture_output=True, text=True)
+expect("cli: card reads its stdin", r.returncode == 0 and "Thursdays at 10:00" in r.stdout, r.stdout + r.stderr)
+msg = settings.card(entries, "o/r", "retro thursday 10?", '{"matches": [{"match": "retro-cron", "options": ["0 10 * * 4"]}]}',
+                    {"caller": settings.edit_caller(fixture, by_key["project-timezone"], "Asia/Jerusalem")})
+expect("card: a schedule in words, in the project's timezone, with its new time as a button",
+       "*Now:* Mondays at 08:00 (Asia/Jerusalem) · `0 8 * * 1` (the default)" in all_text(msg)
+       and [b["text"]["text"] for b in elements(msg)][:2] == ["Thursdays at 10:00", "Other…"]
+       and elements(msg)[0]["value"] == "set|o/r|retro-cron|0 10 * * 4" and "Asia/Jerusalem, the project's timezone" in all_text(msg), msg)
+expect("validate: the person's timezone may be not set (the project's)", settings.validate(by_key["timezone"], "") is None
+       and settings.validate(by_key["project-timezone"], "") is not None)
+msg = settings.card(entries, "o/r", "my tz?", '{"match": "timezone"}', {"now": {}})
+expect("card: the person's timezone not set is the project's", "*Now:* the project's timezone" in all_text(msg), all_text(msg))
+
+# several settings in one answer: one message, an Apply all for the values asked for
+msg = settings.card(entries, "o/r", "timezone israel, retro thu 10", json.dumps({"matches": [
+    {"match": "project-timezone", "options": ["Asia/Jerusalem"]}, {"match": "retro-cron", "options": ["0 10 * * 4"]},
+    {"match": "retro-cron", "options": []}, {"match": "paint", "options": ["red"]}, {"match": "bot-repos", "options": ["x/y"]}]}))
+sections = [b["text"]["text"] for b in msg["blocks"] if b["type"] == "section"]
+apply_btn = [e for e in elements(msg) if e["action_id"] == "setting_all"]
+expect("several: each known setting once, in order", [t.split("\n")[0] for t in sections[:3]]
+       == ["*Project timezone*", "*Retro time*", "*Repos the Slack bot serves*"], sections)
+expect("several: Apply all with the asked values, not the server one",
+       len(apply_btn) == 1 and core_like(apply_btn[0]["value"]) == ("o/r", [["project-timezone", "Asia/Jerusalem"], ["retro-cron", "0 10 * * 4"]])
+       and "Project timezone → `Asia/Jerusalem`; Retro time → Thursdays at 10:00" in all_text(msg), apply_btn)
+expect("several: within Slack's limits", len(msg["blocks"]) <= 50 and all(len(t) <= 3000 for t in sections))
+expect("several: no repo menu on a several-settings answer", not any(e["action_id"] == "setting_repo" for e in elements(msg)))
+msg = settings.card(entries, "o/r", "x", json.dumps({"matches": [{"match": "wip", "options": []}, {"match": "nudge", "options": []}]}))
+expect("several: no Apply all without asked values", not any(e["action_id"] == "setting_all" for e in elements(msg))
+       and msg["blocks"][-1]["type"] != "divider", msg["blocks"][-1])
+# the repo menu on a project card, when the bot serves more than one repo
+msg = settings.card(entries, "o/r", "wip?", '{"match": "wip"}', {"repos": ["o/r", "o/s"]})
+menu = [e for e in elements(msg) if e["action_id"] == "setting_repo"]
+expect("repo menu: on a project card, the current repo picked", len(menu) == 1
+       and [o["value"] for o in menu[0]["options"]] == ["repo|o/r|wip", "repo|o/s|wip"]
+       and menu[0]["initial_option"]["value"] == "repo|o/r|wip", menu)
+expect("repo menu: not for one repo, nor a personal setting",
+       not any(e["action_id"] == "setting_repo" for e in elements(settings.card(entries, "o/r", "w", '{"match": "wip"}', {"repos": ["o/r"]})))
+       and not any(e["action_id"] == "setting_repo" for e in elements(settings.card(entries, "o/r", "n", '{"match": "nudge"}', {"repos": ["o/r", "o/s"]}))))
+expect("prompt: asks for several settings and values in the entry's form",
+       '"matches"' in settings.prompt(entries, "q") and "Asia/Jerusalem" in settings.prompt(entries, "q"))
 msg = settings.card(entries, "o/r", "a <b>", '{"match": "wip"}', {"vars": {"AGENTKIT_WIP": "<!channel> & co"}})
 expect("card: values are escaped", "&lt;!channel&gt; &amp; co" in all_text(msg) and "<!channel>" not in all_text(msg))
 expect("prompt: the model words nothing the person sees", '"answer"' not in settings.prompt(entries, "q"))
