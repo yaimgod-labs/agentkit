@@ -251,6 +251,7 @@ def publish_home(client, user, notice=None):
 @app.event("app_home_opened")
 def on_home(event, client):
     if event.get("tab") == "home":
+        log.info("home: opened by %s", event["user"])
         publish_home(client, event["user"])
 
 
@@ -288,6 +289,7 @@ def on_task(ack, body, client, view):
         if refusal:
             return publish_home(client, user, notice=refusal)
         gh("POST", f"/repos/{repo}/dispatches", token, core.task(repo, title, text, login)[1])
+        log.info("task: sent to %s for %s", repo, login)
     except Exception as e:  # the modal is already closed: say so on Home, or the person sees nothing happen
         log.warning("task: %s: %s", repo, problem(e))
         return publish_home(client, user, notice=f"Could not send “{core.clip(title, 80)}” to {repo} ({problem(e)}). "
@@ -314,6 +316,7 @@ def ask(client, user, question):
             login, _ = core.authorize(user, USERS, permission_of(repo, token))
             if login:
                 gh("POST", f"/repos/{repo}/dispatches", token, core.settings_ask(repo, question, login, user)[1])
+                log.info("settings: question sent through %s for %s", repo, login)
                 return say(f"Looking up “{core.clip(question.strip(), 120)}” (through {repo}); the answer comes "
                            "here in a minute or two.")
         except Exception as e:
@@ -326,6 +329,7 @@ def on_message(event, client):
     # the one place the bot reads free text: a person's own new message in their DM with it
     if event.get("channel_type") != "im" or event.get("subtype") or event.get("bot_id") or event.get("thread_ts"):
         return
+    log.info("dm: message from %s", event["user"])
     ask(client, event["user"], event.get("text") or "")
 
 
@@ -532,5 +536,8 @@ def start_nudges(client):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # one line per action (who, which repo; never message text or payloads), so a click that did nothing can be traced.
+    # Bolt and the Slack SDK stay at WARNING: their debug logs carry payloads
+    log.setLevel(logging.INFO)
     start_nudges(app.client)
     SocketModeHandler(app, secret("SLACK_APP_TOKEN")).start()

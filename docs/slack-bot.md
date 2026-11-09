@@ -83,7 +83,9 @@ image pushed is the one Trivy scanned: the workflow builds once.
 
 Secret files must be readable, and `/data` writable, by the container's uid 10001. With rootful Docker that is host uid
 10001 (`chown 10001:10001`). Under rootless Docker it is a mapped host uid: the start of your range in `/etc/subuid`
-plus 10000 (container uid 0 is you, uid 1 the range's start). Never enable debug logging for Bolt or the Slack SDK: it logs payloads.
+plus 10000 (container uid 0 is you, uid 1 the range's start). Never enable debug logging for Bolt or the Slack SDK: it logs payloads. The bot logs one INFO line per action (Home opened, task sent, DM received, settings question sent):
+who and which repo, never message text. A click with no line did not reach the bot; no `dm:` line after a DM means Slack
+is not sending `message.im`.
 
 ## Turn it on for a repo
 
