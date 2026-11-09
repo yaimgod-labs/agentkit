@@ -116,6 +116,8 @@ Changing a `project` setting needs admin permission on the repo (not just write)
 
 A click validates against the registry's rule and applies it; the card then says what changed and how to undo it ("Back to 09-20"). `match: null` gets an honest "not configurable" plus `File as a feature request` (an issue by the owner in the kit repo's backlog). The model never writes settings: it only picks a registry entry and wording; the bot applies only values that pass `validate`.
 
+*As built (slice 6, Slack part):* the model runs in the project's `reply.yml` (`settings` job), not in the bot (the server has no model key): the bot dispatches `agentkit-slack-settings` to the first repo in its allowlist the person can write to, and the job DMs the card. Buttons carry `set|<repo>|<key>|<value>`. A project setting goes back as `agentkit-slack-setting` to the `setting` job (admin checked in the bot and again there), which sets the variable with the kit App's `actions_variables: write` or opens the caller PR (`workflows: write`); a multi-line `with:` input and the crons stay with `/agentkit:settings`. `match: null`'s feature request is filed in that project repo through the `+ Add task` path. Details and owner steps: `docs/slack-bot.md`, "Settings from Slack".
+
 **Also from Claude Code:** `/agentkit:settings` shows the same registry for those who prefer it. No second source of truth.
 
 ## Chief of staff (last slice)

@@ -1,5 +1,5 @@
 """config/settings.json and scripts/settings.py: every knob the kit reads is in the registry, and validate() holds."""
-import re, subprocess, sys
+import re, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -189,5 +189,123 @@ r = cli("show", "zzzz-nothing")
 expect("cli: show with no match says so", r.returncode == 1 and "no setting" in r.stdout, r.stdout)
 r = cli("bogus")
 expect("cli: bad usage exits 2", r.returncode == 2)
+
+# asking from Slack: the model's answer becomes a card; only registry values that pass validate() become buttons
+import json  # noqa: E402
+
+expect("answer: plain JSON", settings.parse_answer('{"match": "wip", "answer": "a", "options": [3]}')["match"] == "wip")
+expect("answer: JSON in a fence after prose",
+       settings.parse_answer('Sure.\n```json\n{"match": null, "answer": "no"}\n```')["answer"] == "no")
+expect("answer: garbage is empty", settings.parse_answer("no idea") == {} and settings.parse_answer("[1, 2]") == {})
+
+
+def elements(msg):
+    return [e for b in msg["blocks"] if b["type"] == "actions" for e in b["elements"]]
+
+
+def all_text(msg):
+    return json.dumps(msg)
+
+
+q = "Can I change the working hours? " * 5
+msg = settings.card(entries, "o/r", q, json.dumps(
+    {"match": "nudge-hours", "answer": "Yes: nudges. For which hours? " * 10, "options": ["08-18", "25-99", "10-19", "09-20", "07-16"]}))
+head = msg["blocks"][0]["text"]["text"]
+title, answer = head.split("\n")
+expect("card: the title is the question, clipped to 80", title.startswith("*Can I change") and len(title.strip("*")) <= 80, title)
+expect("card: the answer is at most 160", len(answer) <= 160, answer)
+els = elements(msg)
+buttons = [e for e in els if e["type"] == "button"]
+expect("card: only valid options, at most 3, then Other…",
+       [b["text"]["text"] for b in buttons] == ["08-18", "10-19", "09-20", "Other…"], buttons)
+expect("card: a button's value names repo, key and value", buttons[0]["value"] == "set|o/r|nudge-hours|08-18", buttons[0])
+expect("card: Other… carries no value yet", buttons[-1]["value"] == "set|o/r|nudge-hours|" and buttons[-1]["action_id"] == "setting_other")
+expect("card: action ids are unique", len({e["action_id"] for e in els}) == len(els), els)
+sel = [e for e in els if e["type"] == "static_select"]
+expect("card: hours come with a timezone choice", len(sel) == 1 and all(
+    o["value"].startswith("set|o/r|timezone|") and settings.validate(by_key["timezone"], o["value"].split("|", 3)[3]) is None
+    for o in sel[0]["options"]), sel)
+expect("card: every value within Slack's 2000", all(len(e.get("value", "")) <= 2000 for e in els))
+
+msg = settings.card(entries, "o/r", "how many tasks at once?", '{"match": "wip", "answer": "Yes.", "options": ["lots"]}')
+expect("card: no valid option from the model: the registry's own",
+       [b["text"]["text"] for b in elements(msg)] == ["1", "2", "3", "Other…"], elements(msg))
+expect("card: a project setting says it needs admin", "admin" in all_text(msg), all_text(msg))
+msg = settings.card(entries, "o/r", "merge by itself?", '{"match": "auto-merge", "answer": "Yes.", "options": [true]}')
+expect("card: a bool option is a true/false button", [b["value"] for b in elements(msg)] == ["set|o/r|auto-merge|true"], elements(msg))
+
+msg = settings.card(entries, "o/r", "can it paint my house?", '{"match": "paint", "answer": "Sure!", "options": ["red"]}')
+expect("card: an unknown key is no match", "Not something the kit can change yet." in msg["text"] and "Sure" not in all_text(msg), msg)
+fb = elements(msg)
+expect("card: no match offers a feature request with the question",
+       len(fb) == 1 and fb[0]["action_id"] == "setting_feature" and fb[0]["value"] == "feature|o/r|can it paint my house?", fb)
+msg = settings.card(entries, "o/r", "x\n" * 300, "")
+expect("card: the feature request title is one line of at most 256",
+       len(elements(msg)[0]["value"].split("|", 2)[2]) <= 256 and "\n" not in elements(msg)[0]["value"], elements(msg))
+
+msg = settings.card(entries, "o/r", "which repos?", '{"match": "bot-repos", "answer": "The bot serves a list."}')
+expect("card: a server setting only explains", not elements(msg) and "restart the bot" in all_text(msg), msg)
+msg = settings.card(entries, "o/r", "digest later?", '{"match": "digest-cron", "answer": "Yes.", "options": ["0 9 * * *"]}')
+expect("card: a cron goes to Claude Code", not elements(msg) and "/agentkit:settings" in all_text(msg), msg)
+msg = settings.card(entries, "o/r", "a <b>", '{"match": "wip", "answer": "<!channel> & co"}')
+expect("card: question and answer are escaped", "&lt;!channel&gt; &amp; co" in all_text(msg) and "<b>" not in all_text(msg))
+
+# what changed, and Undo
+c = settings.changed(by_key["nudge-hours"], "o/r", "08-18", "09-20")
+expect("changed: says what and what it was", c["text"] == "Nudge hours: 08-18 (was 09-20).", c["text"])
+undo = elements(c)
+expect("changed: Undo puts the old value back", len(undo) == 1 and undo[0]["value"] == "set|o/r|nudge-hours|09-20"
+       and undo[0]["action_id"] == "setting_undo", undo)
+c = settings.changed(by_key["wip"], "o/r", "3", None)
+expect("changed: a project setting names the repo; no Undo without an old value",
+       "o/r" in c["text"] and "not set" in c["text"] and not elements(c), c)
+expect("typed: ints and bools for prefs", settings.typed(by_key["nudges-per-day"], "1") == 1
+       and settings.typed(by_key["auto-merge"], "true") is True and settings.typed(by_key["nudge-hours"], "08-18") == "08-18")
+
+# the caller PR: one `with:` input, nothing else
+fixture = (ROOT / "tests/fixture-callers/current.yml").read_text()
+out = settings.set_caller_input(fixture, by_key["debt-every"], "4")
+diff = [l for l in out.splitlines() if l not in fixture.splitlines()]
+expect("caller: an input added under the job's with:", diff == ["      debt-every: 4"]
+       and out.split("\n  dispatch:\n")[1].split("\n  triage:")[0].count("    with:") == 1, diff)
+again = settings.set_caller_input(out, by_key["debt-every"], "6")
+expect("caller: an input there is replaced", "      debt-every: 6" in again and "debt-every: 4" not in again, again)
+out = settings.set_caller_input(fixture, by_key["model"], "claude-sonnet-5-5")
+jobs_n = len(jobs_of(by_key["model"]))
+expect("caller: every job of the entry", out.count('      model: "claude-sonnet-5-5"') == jobs_n
+       and len(out.splitlines()) == len(fixture.splitlines()) + jobs_n, out)
+out = settings.set_caller_input("jobs:\n  digest:\n    uses: o/k/.github/workflows/digest.yml@v1\n    secrets: {}\n",
+                                by_key["digest-statuses"], "a|b")
+expect("caller: a with: made where missing", out == 'jobs:\n  digest:\n    uses: o/k/.github/workflows/digest.yml@v1\n'
+       '    with:\n      statuses: "a|b"\n    secrets: {}\n', out)
+for entry, v, why in [(by_key["plugins"], "x@y", "multi-line"), (by_key["retro-category"], "${{ secrets.X }}", "expression"),
+                      (by_key["digest-cron"], "0 9 * * *", "cron"), (by_key["wip"], "3", "a variable")]:
+    try:
+        settings.set_caller_input(fixture, entry, v)
+        expect(f"caller: refuses a {why}", False)
+    except ValueError:
+        expect(f"caller: refuses a {why}", True)
+try:
+    settings.set_caller_input("jobs:\n  other:\n    uses: x\n", by_key["debt-every"], "4")
+    expect("caller: no such job is an error", False)
+except ValueError:
+    expect("caller: no such job is an error", True)
+
+r = subprocess.run([sys.executable, str(SCRIPT), "card", "o/r"], input=json.dumps(
+    {"question": "nudge hours?", "result": '{"match": "nudge-hours", "answer": "Yes."}'}), capture_output=True, text=True)
+expect("cli: card prints the Slack message", r.returncode == 0 and json.loads(r.stdout)["blocks"][0]["type"] == "section", r.stderr)
+r = subprocess.run([sys.executable, str(SCRIPT), "prompt"], input="Can I change the working hours?", capture_output=True, text=True)
+expect("cli: the prompt holds the question and the registry, not how to apply",
+       r.returncode == 0 and "Can I change the working hours?" in r.stdout and '"nudge-hours"' in r.stdout
+       and "AGENTKIT_WIP" not in r.stdout, r.stdout[:300])
+with tempfile.TemporaryDirectory() as d:
+    f = Path(d) / "agentkit.yml"
+    f.write_text(fixture)
+    r = cli("caller", "max-rounds", "5", str(f))
+    expect("cli: caller edits the file", r.returncode == 0 and "      max-rounds: 5" in f.read_text(), r.stdout + r.stderr)
+    r = cli("caller", "max-rounds", "99", str(f))
+    expect("cli: caller refuses an invalid value", r.returncode == 1 and "at most 10" in r.stdout + r.stderr, r.stdout + r.stderr)
+    r = cli("caller", "plugins", "x@y", str(f))
+    expect("cli: caller refuses what it cannot edit", r.returncode == 1, r.stdout + r.stderr)
 
 sys.exit(1 if fails else 0)

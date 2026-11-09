@@ -5,9 +5,10 @@ The bot is one container with no inbound port (Slack Socket Mode connects outbou
 
 ## Slack app
 
-Create a Slack app with Socket Mode on and Interactivity on, one bot event (`app_home_opened`, for the board; see
-[App Home, Add task and nudges](#app-home-add-task-and-nudges)), and one bot scope: `chat:write`
-(no `chat:write.public`). Keep two tokens: the bot token (`xoxb-…`) and an app-level token (`xapp-…`, scope
+Create a Slack app with Socket Mode on and Interactivity on, two bot events (`app_home_opened`, for the board; see
+[App Home, Add task and nudges](#app-home-add-task-and-nudges); and `message.im`, for
+[Settings from Slack](#settings-from-slack)), and two bot scopes: `chat:write` (no `chat:write.public`) and
+`im:history` (to read a DM sent to the bot). Keep two tokens: the bot token (`xoxb-…`) and an app-level token (`xapp-…`, scope
 `connections:write`). Use a **private** channel for the cards and invite the bot; who may act is decided by `users.json`,
 not by who can see the channel.
 
@@ -35,8 +36,9 @@ since `contents: write` can push to an unprotected branch. The bot mints a token
 The image pins its base by digest and installs from a hashed lockfile (`bot/requirements.txt`, made from
 `requirements.in` with `uv pip compile --universal --python-version 3.12 --generate-hashes`). It runs as a non-root
 user and works on a read-only filesystem, apart from one writable volume for the nudge settings and history
-(`/data`, below). It is built from the kit's root (it copies the kit's `scripts/card.py`, `scripts/reply.py` and
-`plugins/agentkit/scripts/board.py`, so the board's cards and order are the workflows' own); `bot/Dockerfile.dockerignore`
+(`/data`, below). It is built from the kit's root (it copies the kit's `scripts/card.py`, `scripts/reply.py`,
+`scripts/settings.py` with `config/settings.json`, and `plugins/agentkit/scripts/board.py`, so the board's cards and
+order and the settings rules are the workflows' own); `bot/Dockerfile.dockerignore`
 keeps the build context to those files.
 
 ```yaml
@@ -162,3 +164,45 @@ unaffected.
 3. Server: a writable volume at `/data` owned by uid 10001, and the env `AGENTKIT_KIT_BOT` and `AGENTKIT_SLACK_APP_ID`
    (both optional), as in the compose file above. The build context is now the kit's root.
 4. Redeploy the bot (rebuild or pull the new image, then restart the container).
+
+## Settings from Slack
+
+**Asking.** DM the bot ("can I change the working hours?"), or use **Settings** at the top of its Home tab. The DM is
+the one place the bot reads free text: only a person's own new message in their DM with it (not edits, threads or other
+bots). The bot cannot match the question itself (the server has no model key), so it sends `repository_dispatch`
+`agentkit-slack-settings` `{question, login, slack_user}` to the **first** repo in `AGENTKIT_REPOS` the person can write
+to (the same mapping and check as a click), and says it is looking. The `settings` job in `reply.yml` checks the login
+again, then runs Claude with only the question and the registry (`config/settings.json`, without how each setting is
+applied): no checkout, no tools, one turn, a token that can only read Actions. It answers
+`{"match": key|null, "answer": "…", "options": [...]}`; `scripts/settings.py card` keeps a known key only and only
+options that pass the registry's rule, and the job DMs the card:
+
+> **Can I change the working hours?** Yes: when the bot may nudge you. For which hours?
+> `09-20` · `08-18` · `10-22` · `Other…` · `Your timezone ▾`
+
+At most 3 options, `Other…` (a modal, validated as you type it in) where the setting allows free input, and for nudge
+hours a timezone choice. No match: "Not something the kit can change yet." and **File as a feature request**, which
+files the question as an issue in that repo through the `+ Add task` path. A setting only the server owner can change,
+or a cron, is explained (and `/agentkit:settings` in Claude Code named) without buttons.
+
+**Applying.** A click is validated against the registry again, in the bot; the model never writes a setting.
+
+| Setting | Who | What happens |
+|---|---|---|
+| yours (`nudge`, `nudge-hours`, `nudges-per-day`, `timezone`) | any mapped person | the bot writes `prefs.json` at once (atomically) and edits the card: "Nudge hours: 08-18 (was 09-20)." with **Undo** |
+| a repo variable (`wip`, `auto-merge`, …) | **admin** on the repo | `repository_dispatch` `agentkit-slack-setting` `{key, value, login, slack_user}`; the `setting` job checks admin and the value again, runs `gh variable set` and DMs what changed, with **Undo** |
+| a `with:` input of the caller (`model`, `max-rounds`, …) | **admin** on the repo | the same event; the job opens a PR on `.github/workflows/agentkit.yml` titled "agentkit: set <key> to <value>" and DMs the link. Merging stays the owner's call. A multi-line input (`plugins: \|`) is left to `/agentkit:settings` in Claude Code |
+| the bot's env, crons | the owner | explained only |
+
+**What the owner changes to turn this on:**
+
+1. Slack app settings: **Event Subscriptions**, add the bot event `message.im`; **OAuth & Permissions**, add the bot
+   scope `im:history` (so the bot can read DMs sent to it); **App Home**, turn on "Allow users to send Slash commands
+   and messages from the messages tab". Reinstall the app when Slack asks.
+2. The kit's lifecycle GitHub App (the one `AGENTKIT_CLIENT_ID` names, not the bot's own App): add the repository
+   permissions **Variables: write** (repo variables) and, for the caller PRs, **Workflows: write** with **Contents:
+   write** and **Pull requests: write**; accept the new permissions on each installation. Without them that path fails
+   and the person gets no DM; the rest works.
+3. Each project: `gh agentkit upgrade owner/repo` and merge its PR, so the caller has the two new event types and its
+   `reply` job passes `CLAUDE_CODE_OAUTH_TOKEN` and `SLACK_BOT_TOKEN`. `gh agentkit doctor owner/repo` warns until then.
+4. Redeploy the bot: the image now also takes `scripts/settings.py` and `config/settings.json`.

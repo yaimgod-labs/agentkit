@@ -160,7 +160,9 @@ expect("home: a waiting item has its card's buttons", len(acts) == 1 and acts[0]
 expect("home: in progress names the stage", any("#5>" in s and "review" in s for s in t), t)
 expect("home: titles are escaped", any("shipped &lt;it&gt; &amp; more" in s for s in t), t)
 addb = [b["accessory"] for b in v["blocks"] if b.get("accessory")]
-expect("home: + Add task button per repo", addb and addb[0]["action_id"] == "add_task" and addb[0]["value"] == "o/r", addb)
+expect("home: a Settings button on top", addb[0]["action_id"] == "settings_ask", addb)
+addb = [a for a in addb if a["action_id"] == "add_task"]
+expect("home: + Add task button per repo", addb and addb[0]["value"] == "o/r", addb)
 expect("home: within Slack's 100 blocks", len(v["blocks"]) <= 100)
 
 big = {"repo": "o/r", "since": "2026-11-02", "waiting": [iss(n, "status:needs-info") for n in range(1, 41)],
@@ -202,6 +204,27 @@ expect("task: a long title is refused", "title" in core.task_errors("t" * 257, "
 expect("task: a title is one line", "title" in core.task_errors("a\nb", ""))
 expect("task: a long body is refused", "body" in core.task_errors("t", "b" * 3001))
 expect("task: a good one passes", core.task_errors("t", "b") == {})
+
+# Settings: asking, and a click on an answer's button
+import settings  # noqa: E402
+expect("settings: a project setting needs admin, not write",
+       core.authorize("U1", users, perm, core.ADMIN)[0] is None and "admin" in core.authorize("U1", users, perm, core.ADMIN)[1])
+expect("settings: an admin may", core.authorize("U1", users, {"alice": "admin"}.get, core.ADMIN) == ("alice", None))
+expect("settings: a question is needed", core.ask_error("  ") and core.ask_error("x" * 501) and core.ask_error("hours?") is None)
+body = core.settings_ask("o/r", " can I change the hours? ", "alice", "U1")[1]
+expect("settings: ask body", body == {"event_type": "agentkit-slack-settings", "client_payload": {
+    "question": "can I change the hours?", "login": "alice", "slack_user": "U1"}}, body)
+body = core.setting("o/r", "wip", "3", "alice", "U1")[1]
+expect("settings: apply body", body == {"event_type": "agentkit-slack-setting", "client_payload": {
+    "key": "wip", "value": "3", "login": "alice", "slack_user": "U1"}}, body)
+expect("settings: value round trip", core.parse_setting("set|o/r|digest-statuses|a|b") == ("o/r", "digest-statuses", "a|b"))
+for bad in ["set|../r|wip|3", "set|o/r|Bad Key|3", "set|o/r", "reply|o/r|wip|3"]:
+    try: core.parse_setting(bad); expect("settings: bad value rejected: " + bad, False)
+    except ValueError: expect("settings: bad value rejected: " + bad, True)
+btn = [e for b in settings.card(settings.load(), "o/r", "hours?", '{"match": "nudge-hours"}')["blocks"]
+       if b["type"] == "actions" for e in b["elements"] if e["type"] == "button"][0]
+expect("settings: a card's button parses", core.parse_setting(btn["value"]) == ("o/r", "nudge-hours", "09-20"), btn)
+expect("settings: a feature request round trip", core.parse_feature("feature|o/r|can it paint?") == ("o/r", "can it paint?"))
 
 # nudges
 from datetime import datetime, timedelta, timezone

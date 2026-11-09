@@ -22,9 +22,9 @@ on:
     - cron: "0 7 * * *"  # daily digest (UTC)
     - cron: "0 8 * * 1"  # weekly retro (UTC, Mondays)
   workflow_dispatch:
-  # the Slack bot's button clicks and + Add task (slack-bot interface)
+  # the Slack bot's button clicks, + Add task and settings (slack-bot interface)
   repository_dispatch:
-    types: [agentkit-slack-reply, agentkit-slack-task]
+    types: [agentkit-slack-reply, agentkit-slack-task, agentkit-slack-settings, agentkit-slack-setting]
 
 permissions:
   contents: read
@@ -90,10 +90,12 @@ jobs:
   reply:
     # Claude Code + Slack mode (AGENTKIT_INTERFACE=claude-slack): a person's answer on a waiting issue,
     # posted from its Slack card's Comment button, carries out the reply's action (`/` commands go to their own jobs);
-    # with the Slack bot, its button clicks and its `+ Add task` (a new issue that goes to refinement) land here too
+    # with the Slack bot, its button clicks, its `+ Add task` (a new issue that goes to refinement) and settings asked
+    # in Slack (the answer and a project setting picked on it) land here too
     if: >-
       (github.event_name == 'repository_dispatch' &&
-       (github.event.action == 'agentkit-slack-reply' || github.event.action == 'agentkit-slack-task') &&
+       (github.event.action == 'agentkit-slack-reply' || github.event.action == 'agentkit-slack-task' ||
+        github.event.action == 'agentkit-slack-settings' || github.event.action == 'agentkit-slack-setting') &&
        vars.AGENTKIT_SLACK_BOT == 'true') ||
       (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
        github.event.comment.user.type != 'Bot' && !startsWith(github.event.comment.body, '/') &&
@@ -103,6 +105,8 @@ jobs:
     uses: your-org/agentkit/.github/workflows/reply.yml@v1
     secrets:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
 
   card:
     # Slack bot mode (AGENTKIT_SLACK_BOT=true): an issue that starts waiting on a person gets one short card,
