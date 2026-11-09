@@ -8,7 +8,7 @@ import tempfile
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 LOGIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
 REPO = re.compile(r"^[A-Za-z0-9-]+/(?!\.\.?$)[A-Za-z0-9._-]+$")
@@ -270,6 +270,13 @@ def parse_hours(s):
     if not m or not 0 <= int(m.group(1)) < int(m.group(2)) <= 24:
         raise ValueError(f"bad nudge hours: {s!r} (want HH-HH, like 09-20)")
     return int(m.group(1)), int(m.group(2))
+
+
+def zones(query, limit=100):
+    """Timezone names matching what the person typed ("jeru", "new york", "berlin"), for the searchable picker; Slack
+    shows at most 100 options."""
+    q = (query or "").strip().lower().replace(" ", "_")
+    return [z for z in sorted(available_timezones()) if q in z.lower() and not z.startswith(("Etc/", "SystemV/"))][:limit]
 
 
 def zone(name):
