@@ -20,9 +20,9 @@ on:
     - cron: "0 7 * * *"  # daily digest (UTC)
     - cron: "0 8 * * 1"  # weekly retro (UTC, Mondays)
   workflow_dispatch:
-  # the Slack bot's button clicks and + Add task (slack-bot interface)
+  # the Slack bot's button clicks, + Add task and settings (slack-bot interface)
   repository_dispatch:
-    types: [agentkit-slack-reply, agentkit-slack-task]
+    types: [agentkit-slack-reply, agentkit-slack-task, agentkit-slack-settings, agentkit-slack-setting]
 
 permissions:
   contents: read
@@ -91,7 +91,8 @@ jobs:
   reply:
     if: >-
       (github.event_name == 'repository_dispatch' &&
-       (github.event.action == 'agentkit-slack-reply' || github.event.action == 'agentkit-slack-task') &&
+       (github.event.action == 'agentkit-slack-reply' || github.event.action == 'agentkit-slack-task' ||
+        github.event.action == 'agentkit-slack-settings' || github.event.action == 'agentkit-slack-setting') &&
        vars.AGENTKIT_SLACK_BOT == 'true') ||
       (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
        github.event.comment.user.type != 'Bot' && !startsWith(github.event.comment.body, '/') &&
@@ -103,6 +104,8 @@ jobs:
       agentkit-ref: main
     secrets:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
 
   card:
     # Slack bot mode (AGENTKIT_SLACK_BOT=true): an issue that starts waiting on a person gets one short card,

@@ -1,5 +1,6 @@
 """agentkit Slack bot (Socket Mode): a click on a card becomes a `repository_dispatch` to the project's reply workflow;
-the Home tab is the board (with `+ Add task`); a background loop sends each person at most two "N waiting" nudges a day.
+the Home tab is the board (with `+ Add task`); a background loop sends each person at most two "N waiting" nudges a day;
+a DM to the bot (or App Home -> Settings) asks about a setting, and a click on the answer applies it (scripts/settings.py).
 Everything it decides is in core.py. Env: SLACK_BOT_TOKEN and SLACK_APP_TOKEN (or the same name with _FILE, a path
 to a file holding the value), GITHUB_CLIENT_ID, GITHUB_APP_KEY_FILE, USERS_FILE, AGENTKIT_REPOS (comma-separated
 owner/repo allowlist); optional AGENTKIT_PREFS (nudge settings and history, default /data/prefs.json),
@@ -30,6 +31,7 @@ for d in (HERE.parent / "plugins/agentkit/scripts", HERE.parent / "scripts", HER
         sys.path.insert(0, str(d))
 import card  # noqa: E402
 import core  # noqa: E402
+import settings  # noqa: E402
 
 
 def secret(name):
@@ -38,7 +40,7 @@ def secret(name):
     return open(path).read().strip() if path else os.environ[name]
 
 
-REPOS = {r.strip() for r in os.environ["AGENTKIT_REPOS"].split(",") if r.strip()}
+REPOS = list(dict.fromkeys(r.strip() for r in os.environ["AGENTKIT_REPOS"].split(",") if r.strip()))  # in order
 USERS = core.load_users(os.environ["USERS_FILE"])
 PREFS = os.environ.get("AGENTKIT_PREFS", "/data/prefs.json")
 KIT_BOT = os.environ.get("AGENTKIT_KIT_BOT", "").strip()
@@ -48,6 +50,8 @@ SENT_FOR = 900  # seconds a reply sent from the Home tab shows there instead of 
 DISPATCH = {"contents": "write", "metadata": "read"}  # repository_dispatch and the permission check
 READ = {"issues": "read", "metadata": "read"}  # the board and the nudge count
 SENT = {}  # slack user -> {"owner/repo#n": (reply, time)}
+PREFS_LOCK = threading.Lock()  # the nudge loop and a settings click both write the prefs file
+REGISTRY = settings.load()
 app = App(token=secret("SLACK_BOT_TOKEN"))
 log = logging.getLogger("agentkit-bot")
 
@@ -288,6 +292,157 @@ def on_task(ack, body, client, view):
                                       "and goes to refinement.")
 
 
+# --- settings: ask in a DM or from the Home tab, apply with a click -------------------------------------------------
+
+def ask(client, user, question):
+    """Send the question to the first repo in AGENTKIT_REPOS the person can write to: a read-only model there picks
+    the registry entry, and the workflow DMs the answer card back."""
+    def say(m):
+        client.chat_postMessage(channel=user, text=m)
+    err = core.ask_error(question)
+    if err:
+        return say(err)
+    if user not in USERS:
+        return say("Your Slack account is not linked to a GitHub login. Ask the owner to add you.")
+    for repo in REPOS:
+        try:
+            token = install_token(repo, DISPATCH)
+            login, _ = core.authorize(user, USERS, permission_of(repo, token))
+            if login:
+                gh("POST", f"/repos/{repo}/dispatches", token, core.settings_ask(repo, question, login, user)[1])
+                return say(f"Looking it up (through {repo}); the answer comes here in a minute or two.")
+        except Exception as e:
+            log.warning("settings: %s: %s", repo, problem(e))
+    say("You have write access to none of the repositories this bot serves, so I cannot look it up.")
+
+
+@app.event("message")
+def on_message(event, client):
+    # the one place the bot reads free text: a person's own new message in their DM with it
+    if event.get("channel_type") != "im" or event.get("subtype") or event.get("bot_id") or event.get("thread_ts"):
+        return
+    ask(client, event["user"], event.get("text") or "")
+
+
+@app.action("settings_ask")
+def on_settings_ask(ack, body, client):
+    ack()
+    client.views_open(trigger_id=body["trigger_id"], view={
+        "type": "modal", "callback_id": "settings", "title": {"type": "plain_text", "text": "Settings"},
+        "submit": {"type": "plain_text", "text": "Ask"},
+        "blocks": [{"type": "input", "block_id": "q", "label": {"type": "plain_text", "text": "What would you like to change?"},
+                    "element": {"type": "plain_text_input", "action_id": "v", "max_length": core.ASK_MAX,
+                                "placeholder": {"type": "plain_text", "text": "Can I change the nudge hours?"}}}]})
+
+
+@app.view("settings")
+def on_settings(ack, body, client, view):
+    ack()
+    ask(client, body["user"]["id"], view["state"]["values"]["q"]["v"]["value"] or "")
+
+
+def edit(client, ch, ts, m):
+    client.chat_update(channel=ch, ts=ts, text=m, blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": core.esc(m)}}])
+
+
+def apply_setting(client, user, value, ch, ts):
+    """A click on an answer's option: validated against the registry, then applied. A user setting is written to the
+    prefs file here; a project one (admin only) goes to the repo's `setting` job. The model never writes one."""
+    try:
+        repo, key, val = core.parse_setting(value)
+    except ValueError:
+        return edit(client, ch, ts, "That button is not valid.")
+    entry = settings.find(REGISTRY, key)
+    if entry is None or repo not in REPOS:
+        return edit(client, ch, ts, "That setting or repository is not one this bot manages.")
+    err = settings.validate(entry, val)
+    if err:
+        return edit(client, ch, ts, f"{entry['title']}: not changed, the value {err}.")
+    via = entry["apply"]["via"]
+    if via == "prefs":
+        if user not in USERS:
+            return edit(client, ch, ts, "Your Slack account is not linked to a GitHub login. Ask the owner to add you.")
+        try:
+            with PREFS_LOCK:
+                data = prefs()
+                mine = data["prefs"].setdefault(user, {})
+                old = mine.get(key, entry["default"])
+                mine[key] = settings.typed(entry, val)
+                prefs(save=data)
+        except PrefsBroken as e:
+            log.error("settings: %s cannot be read or written (%s)", PREFS, e)
+            return edit(client, ch, ts, "Not changed: the bot cannot save settings now. Tell the owner.")
+        return client.chat_update(channel=ch, ts=ts, **settings.changed(entry, repo, val, old))
+    if via == "server" or (via == "caller" and "input" not in entry["apply"]):
+        return edit(client, ch, ts, f"{entry['title']}: change it in Claude Code with /agentkit:settings, or {settings.how(entry)}.")
+    token = install_token(repo, DISPATCH)
+    login, refusal = core.authorize(user, USERS, permission_of(repo, token), core.ADMIN)
+    if refusal:
+        return edit(client, ch, ts, refusal)
+    gh("POST", f"/repos/{repo}/dispatches", token, core.setting(repo, key, val, login, user)[1])
+    edit(client, ch, ts, f"Sent: {entry['title']} on {repo} to {settings.text(val)}. "
+                         + ("I'll DM you when it is set." if via == "variable" else "I'll DM you the pull request."))
+
+
+@app.action(re.compile(r"^setting_(\d|select|undo)$"))
+def on_setting(ack, body, client):
+    ack()
+    a = body["actions"][0]
+    value = a.get("value") or (a.get("selected_option") or {}).get("value") or ""
+    apply_setting(client, body["user"]["id"], value, body["channel"]["id"], body["message"]["ts"])
+
+
+@app.action("setting_other")
+def on_setting_other(ack, body, client):
+    ack()
+    try:
+        repo, key, _ = core.parse_setting(body["actions"][0]["value"])
+    except ValueError:
+        return
+    entry = settings.find(REGISTRY, key)
+    if entry is None:
+        return
+    meta = {"repo": repo, "key": key, "ch": body["channel"]["id"], "ts": body["message"]["ts"]}
+    client.views_open(trigger_id=body["trigger_id"], view={
+        "type": "modal", "callback_id": "setting_value", "private_metadata": json.dumps(meta),
+        "title": {"type": "plain_text", "text": "Other value"}, "submit": {"type": "plain_text", "text": "Set"},
+        "blocks": [{"type": "input", "block_id": "v", "label": {"type": "plain_text", "text": core.clip(entry["title"], 48)},
+                    "hint": {"type": "plain_text", "text": core.clip(entry["description"], 150)},
+                    "element": {"type": "plain_text_input", "action_id": "v", "max_length": 1000}}]})
+
+
+@app.view("setting_value")
+def on_setting_value(ack, body, client, view):
+    meta = json.loads(view["private_metadata"])
+    val = (view["state"]["values"]["v"]["v"]["value"] or "").strip()
+    entry = settings.find(REGISTRY, meta["key"])
+    err = settings.validate(entry, val) if entry else "is not a setting"
+    if err:
+        return ack(response_action="errors", errors={"v": f"The value {err}."})
+    ack()
+    apply_setting(client, body["user"]["id"], settings.value(meta["repo"], meta["key"], val), meta["ch"], meta["ts"])
+
+
+@app.action("setting_feature")
+def on_setting_feature(ack, body, client):
+    """No setting fits: the question becomes a feature request, through + Add task's path."""
+    ack()
+    user, ch, ts = body["user"]["id"], body["channel"]["id"], body["message"]["ts"]
+    try:
+        repo, title = core.parse_feature(body["actions"][0]["value"])
+    except ValueError:
+        return edit(client, ch, ts, "That button is not valid.")
+    if repo not in REPOS or core.task_errors(title, ""):
+        return edit(client, ch, ts, "That button is not valid.")
+    token = install_token(repo, DISPATCH)
+    login, refusal = core.authorize(user, USERS, permission_of(repo, token))
+    if refusal:
+        return edit(client, ch, ts, refusal)
+    gh("POST", f"/repos/{repo}/dispatches", token,
+       core.task(repo, title, "Asked the settings bot in Slack; the kit has no setting for it yet.", login)[1])
+    edit(client, ch, ts, f"Filed “{core.clip(title, 80)}” as a feature request in {repo}: it becomes an issue in a minute.")
+
+
 # --- nudges ---------------------------------------------------------------------------------------------------------
 
 def waiting_counts(users):
@@ -326,8 +481,10 @@ def nudge_once(client, link):
     for user, count in waiting_counts(users).items():
         if core.due(data["prefs"].get(user), data["history"].get(user), now, count):
             client.chat_postMessage(channel=user, text=core.nudge_text(count, link))
-            data["history"][user] = core.record(data["history"].get(user), now)
-            prefs(save=data)
+            with PREFS_LOCK:  # read again: a settings click may have written meanwhile
+                data = prefs()
+                data["history"][user] = core.record(data["history"].get(user), now)
+                prefs(save=data)
 
 
 def nudge_loop(client):

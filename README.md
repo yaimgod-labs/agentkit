@@ -74,6 +74,7 @@ Repo variables: `AGENTKIT_WIP` (2), `AGENTKIT_BASE` (PR target if not the defaul
 - `python3 scripts/settings.py show [word]`: the entries, with options and the exact way to change each.
 - `python3 scripts/settings.py validate <key> <value>`: exit 0, or the reason the value is refused.
 - `/agentkit:settings <question>` in Claude Code: "can I change X?" answered from the registry with its options; it prints the `gh variable set` command or proposes the caller edit as a PR, and never invents a setting.
+- With the Slack bot: DM it the question (or App Home → Settings) and click an option: your own settings apply at once, a repo variable or caller input needs admin access. See [Settings from Slack](docs/slack-bot.md#settings-from-slack).
 
 ## Dependencies, `/board` and `/task`
 

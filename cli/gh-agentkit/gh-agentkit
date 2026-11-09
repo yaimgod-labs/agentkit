@@ -426,6 +426,13 @@ doctor_bot() {
     && ok "caller takes the bot's repository_dispatch" || warn "the caller has no repository_dispatch trigger for agentkit-slack-reply: button clicks do nothing ($merge)"
   grep -qE 'types: \[.*agentkit-slack-task' <<<"${3:-}" \
     && ok "caller takes the bot's Add task" || warn "the caller has no repository_dispatch trigger for agentkit-slack-task: + Add task does nothing ($merge)"
+  grep -qE 'types: \[.*agentkit-slack-settings' <<<"${3:-}" && grep -qE 'types: \[.*agentkit-slack-setting[],]' <<<"${3:-}" \
+    && ok "caller takes the bot's settings" \
+    || warn "the caller has no repository_dispatch trigger for agentkit-slack-settings and agentkit-slack-setting: settings asked in Slack get no answer ($merge)"
+  # the reply job's own block: the settings answer needs the model and the Slack token
+  awk '/^  reply:/{d=1; next} /^  [A-Za-z_][A-Za-z0-9_-]*:/{d=0} d' <<<"${3:-}" \
+    | grep -q 'SLACK_BOT_TOKEN: \${{ secrets.SLACK_BOT_TOKEN }}' \
+    && ok "caller's reply job gets SLACK_BOT_TOKEN" || warn "the caller's reply job does not pass SLACK_BOT_TOKEN and CLAUDE_CODE_OAUTH_TOKEN: settings asked in Slack get no answer ($merge)"
   grep -q '/\.github/workflows/card\.yml@' <<<"${3:-}" \
     && ok "caller has the card job" || warn "the caller has no card job: no cards are posted ($merge)"
   # the dispatch job's own block: from its name to the next job

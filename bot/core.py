@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 LOGIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
 REPO = re.compile(r"^[A-Za-z0-9-]+/(?!\.\.?$)[A-Za-z0-9._-]+$")
 WRITE = {"write", "maintain", "admin"}
+ADMIN = {"admin"}  # a project setting (a repo variable, the caller workflow)
 EVENT = "agentkit-slack-reply"
 
 
@@ -26,13 +27,16 @@ def load_users(path):
     return users
 
 
-def authorize(slack_id, users, permission_of):
-    """(login, None) when this Slack user is mapped and has write access now, else (None, reason for the person).
-    `permission_of(login)` asks GitHub; it is called on every interaction, never cached."""
+def authorize(slack_id, users, permission_of, allowed=WRITE):
+    """(login, None) when this Slack user is mapped and has write access now (or one of `allowed`, such as ADMIN),
+    else (None, reason for the person). `permission_of(login)` asks GitHub; it is called on every interaction, never
+    cached."""
     login = users.get(slack_id)
     if login is None:
         return None, "Your Slack account is not linked to a GitHub login. Ask the owner to add you."
-    if permission_of(login) not in WRITE:
+    if permission_of(login) not in allowed:
+        if allowed is ADMIN:
+            return None, f"{login} needs admin access to this repository to change its settings."
         return None, f"{login} no longer has write access to this repository."
     return login, None
 
@@ -154,6 +158,8 @@ def home_view(boards, card_blocks, sent=None, notice=None):
     if not boards:
         return {"type": "home", "blocks": top + [_section(
             "You have write access to none of the repositories this bot serves, so there is nothing to show.")]}
+    top.append(_section("Something to change? Ask, or DM me: _can I change the nudge hours?_", accessory={
+        "type": "button", "action_id": "settings_ask", "text": {"type": "plain_text", "text": "Settings"}}))
     boards = list(boards)
 
     def fits(caps):
@@ -198,6 +204,55 @@ def task(repo, title, body, login):
     """The repository_dispatch body for a new task: the workflow checks the login and the lengths again."""
     return repo, {"event_type": TASK_EVENT,
                   "client_payload": {"title": (title or "").strip(), "body": body or "", "login": login}}
+
+
+# --- Settings: asking, and a click on an answer's button ----------------------------------------------------------
+
+SETTINGS_EVENT, SETTING_EVENT = "agentkit-slack-settings", "agentkit-slack-setting"
+ASK_MAX = 500
+KEY = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+def ask_error(question):
+    """Why a settings question cannot be sent, or None."""
+    q = (question or "").strip()
+    if not q:
+        return "Ask me about a setting, for example: can I change the nudge hours?"
+    if len(q) > ASK_MAX:
+        return f"Shorter, please: at most {ASK_MAX} characters."
+    return None
+
+
+def settings_ask(repo, question, login, slack_user):
+    """The repository_dispatch body for a question: a read-only model in the workflow picks the registry entry, and
+    the workflow DMs the answer card to the person."""
+    return repo, {"event_type": SETTINGS_EVENT,
+                  "client_payload": {"question": question.strip(), "login": login, "slack_user": slack_user}}
+
+
+def setting(repo, key, value, login, slack_user):
+    """The repository_dispatch body for a project setting: the workflow checks admin and validates again."""
+    return repo, {"event_type": SETTING_EVENT,
+                  "client_payload": {"key": key, "value": value, "login": login, "slack_user": slack_user}}
+
+
+def parse_setting(value):
+    """`set|<owner/repo>|<key>|<value>` from a settings button (settings.value()) -> (repo, key, value)."""
+    kind, _, rest = value.partition("|")
+    repo, _, rest = rest.partition("|")
+    key, sep, v = rest.partition("|")
+    if kind != "set" or not sep or not REPO.match(repo) or not KEY.match(key):
+        raise ValueError("bad settings button")
+    return repo, key, v
+
+
+def parse_feature(value):
+    """`feature|<owner/repo>|<question>` from the no-match card -> (repo, question)."""
+    kind, _, rest = value.partition("|")
+    repo, sep, title = rest.partition("|")
+    if kind != "feature" or not sep or not REPO.match(repo):
+        raise ValueError("bad feature button")
+    return repo, title
 
 
 # --- Nudges --------------------------------------------------------------------------------------------------------

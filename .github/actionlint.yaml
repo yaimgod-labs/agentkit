@@ -5,3 +5,6 @@ paths:
     ignore:
       - 'missing input "app-id" which is required by action "actions/create-github-app-token@v3"'
       - 'input "client-id" is not defined in action "actions/create-github-app-token@v3"'
+      # the App's "Variables" permission (API name actions_variables) is not in the action's input list, but the
+      # action passes every permission-* input through (lib/get-permissions-from-inputs.js); the run log warns
+      - 'input "permission-actions-variables" is not defined in action "actions/create-github-app-token@v3"'

@@ -198,7 +198,7 @@
     "options": ["claude-opus-5-5", "claude-sonnet-5-5"],
     "other": true,
     "validate": {"regex": "claude-[a-z0-9.-]+", "hint": "must be a Claude model id such as claude-opus-5-5"},
-    "apply": {"via": "caller", "job": ["refine", "implement", "plan", "review", "retro"], "input": "model"}
+    "apply": {"via": "caller", "job": ["refine", "implement", "plan", "review", "retro", "reply"], "input": "model"}
   },
   {
     "key": "plugins",

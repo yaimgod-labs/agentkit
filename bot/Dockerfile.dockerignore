@@ -5,4 +5,6 @@
 !bot/app.py
 !scripts/card.py
 !scripts/reply.py
+!scripts/settings.py
+!config/settings.json
 !plugins/agentkit/scripts/board.py

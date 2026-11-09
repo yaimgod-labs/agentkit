@@ -8,6 +8,11 @@
 # The `task` job takes the bot's `+ Add task` (repository_dispatch `agentkit-slack-task`, client_payload:
 # {title, body, login}): the same login check, then a new issue by the kit's App, filed straight into status:refining
 # (what triage.yml gives a new issue by a trusted author), its body ending in "Filed by @login from Slack."
+# Settings from Slack (scripts/settings.py, config/settings.json): the `settings` job takes a question
+# (`agentkit-slack-settings`, {question, login, slack_user}) and DMs the person a card of valid options, picked by a
+# model that gets only the question and the registry, with no tools. The bot applies a person's own setting itself;
+# a project setting comes back as `agentkit-slack-setting` ({key, value, login, slack_user}): the `setting` job checks
+# admin access and the value again, then sets the repo variable or opens a PR on the caller, and DMs the outcome.
 name: agentkit-reply
 
 on:
@@ -17,15 +22,23 @@ on:
         description: Override the kit commit, branch or tag to load scripts and the plugin from (default — the commit the caller's `uses:` resolved to)
         type: string
         default: ""
+      model:
+        description: Claude model that matches a settings question to the registry
+        type: string
+        default: claude-opus-5-5
     secrets:
       AGENTKIT_APP_KEY:
         required: true
+      CLAUDE_CODE_OAUTH_TOKEN:  # settings questions from the Slack bot
+        required: false
+      SLACK_BOT_TOKEN:  # the settings answers, DMed to the person
+        required: false
 
 permissions: {}
 
 jobs:
   reply:
-    if: github.event.action != 'agentkit-slack-task'
+    if: github.event_name != 'repository_dispatch' || github.event.action == 'agentkit-slack-reply'
     runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}
@@ -206,3 +219,247 @@ jobs:
           url=$(printf '%s\n' "$body" | gh issue create --repo "$REPO" --title "$title" --body-file - --label status:refining)
           # the title is never echoed: a log line can carry workflow commands
           echo "filed $url for $LOGIN"
+
+  # the Slack bot's settings question: the model only picks a registry entry and words the answer; settings.py keeps
+  # only options that pass the registry's rule, and the card goes to the person's DM
+  settings:
+    if: github.event_name == 'repository_dispatch' && github.event.action == 'agentkit-slack-settings'
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    permissions: {}
+    env:
+      REPO: ${{ github.repository }}
+    steps:
+      # the payload is read from the event file with jq, never through an expression
+      - id: payload
+        name: Check the payload
+        run: |
+          login=$(jq -r '.client_payload.login // ""' "$GITHUB_EVENT_PATH")
+          user=$(jq -r '.client_payload.slack_user // ""' "$GITHUB_EVENT_PATH")
+          [[ $login =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || { echo "::error::the payload names no GitHub login"; exit 1; }
+          [[ $user =~ ^[UW][A-Z0-9]+$ ]] || { echo "::error::the payload names no Slack user"; exit 1; }
+          jq -e '.client_payload.question | type == "string" and test("\\S") and length <= 500' "$GITHUB_EVENT_PATH" >/dev/null \
+            || { echo "::error::the question is missing or too long"; exit 1; }
+          { echo "login=$login"; echo "user=$user"; } >>"$GITHUB_OUTPUT"
+
+      # one token for the whole job: Load agentkit and the permission check; the model gets nothing it can write with
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-actions: read  # Load agentkit reads this run's referenced workflows
+
+      - name: Load agentkit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: reply.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+
+      # the bot checked the person's write access; the workflow checks it again
+      - id: trust
+        continue-on-error: true  # an untrusted login is ignored, not an error
+        uses: ./.agentkit-kit/.github/actions/trusted
+        with:
+          logins: ${{ steps.payload.outputs.login }}
+          token: ${{ steps.app.outputs.token }}
+          bot: ${{ steps.app.outputs.app-slug }}[bot]
+          require-all: "true"
+
+      - id: prompt
+        if: steps.trust.outcome == 'success'
+        run: |
+          # a random delimiter, so the question cannot end the output early
+          eof=EOF$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+          { echo "text<<$eof"
+            jq -r .client_payload.question "$GITHUB_EVENT_PATH" | python3 .agentkit-kit/scripts/settings.py prompt
+            echo "$eof"; } >>"$GITHUB_OUTPUT"
+
+      # the question and the registry only: no checkout, no tools, one turn, a token that can only read Actions
+      - id: claude
+        if: steps.trust.outcome == 'success'
+        continue-on-error: true  # no answer is DMed as such below
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app.outputs.token }}
+          # the bot's own App sends the dispatch; the trust step vetted the person
+          allowed_bots: "*"
+          prompt: ${{ steps.prompt.outputs.text }}
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns 1
+            --tools ""
+
+      - name: Usage
+        if: always() && steps.claude.outputs.execution_file != ''
+        continue-on-error: true  # usage logging never fails a run
+        uses: ./.agentkit-kit/.github/actions/usage
+        with:
+          execution-file: ${{ steps.claude.outputs.execution_file }}
+          job: settings
+          model: ${{ inputs.model }}
+
+      - name: Answer in Slack
+        if: steps.trust.outcome == 'success'
+        env:
+          EXEC: ${{ steps.claude.outputs.execution_file }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          USER_ID: ${{ steps.payload.outputs.user }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LOGIN: ${{ steps.payload.outputs.login }}
+        run: |
+          result=''
+          [ -z "$EXEC" ] || result=$(jq -r '[.[] | select(.type=="result")] | last | .result // ""' "$EXEC" 2>/dev/null || true)
+          if [ -z "$result" ]; then
+            jq -n --arg t "Sorry, I could not look that up this time ($RUN). Ask again in a bit." '{text: $t}'
+          else
+            jq --arg result "$result" '{question: .client_payload.question, result: $result}' "$GITHUB_EVENT_PATH" \
+              | python3 .agentkit-kit/scripts/settings.py card "$REPO"
+          fi | python3 .agentkit-kit/scripts/settings.py dm "$USER_ID" >/dev/null
+          # the question and the answer are never echoed: a log line can carry workflow commands
+          echo "answered a settings question for $LOGIN"
+
+  # a project setting picked on a settings card: admin only, validated again, then a repo variable or a caller PR
+  setting:
+    if: github.event_name == 'repository_dispatch' && github.event.action == 'agentkit-slack-setting'
+    runs-on: ${{ github.event.repository.private && vars.AGENTKIT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions: {}
+    concurrency:
+      group: agentkit-setting
+      cancel-in-progress: false
+    env:
+      REPO: ${{ github.repository }}
+    steps:
+      # the payload is read from the event file with jq, never through an expression; the value never leaves it
+      - id: payload
+        name: Check the payload
+        run: |
+          login=$(jq -r '.client_payload.login // ""' "$GITHUB_EVENT_PATH")
+          user=$(jq -r '.client_payload.slack_user // ""' "$GITHUB_EVENT_PATH")
+          key=$(jq -r '.client_payload.key // ""' "$GITHUB_EVENT_PATH")
+          [[ $login =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || { echo "::error::the payload names no GitHub login"; exit 1; }
+          [[ $user =~ ^[UW][A-Z0-9]+$ ]] || { echo "::error::the payload names no Slack user"; exit 1; }
+          [[ $key =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::the payload names no setting"; exit 1; }
+          jq -e '.client_payload.value | type == "string" and length <= 1000 and (test("[\\r\\n]") | not)' "$GITHUB_EVENT_PATH" >/dev/null \
+            || { echo "::error::the value is missing, too long or more than one line"; exit 1; }
+          { echo "login=$login"; echo "user=$user"; echo "key=$key"; } >>"$GITHUB_OUTPUT"
+
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-actions: read  # Load agentkit reads this run's referenced workflows
+
+      - name: Load agentkit
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RUN: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SELF: reply.yml
+          REF: ${{ inputs.agentkit-ref }}
+        run: |
+          read -r kit sha < <(gh api "$RUN" --jq '[.referenced_workflows[] | select(.path | contains("/.github/workflows/" + env.SELF + "@"))][0] | "\(.path | split("/.github/")[0]) \(.sha)"') || true
+          [ -n "${kit:-}" ] || { echo "::error::$SELF is not among this run's referenced workflows"; exit 1; }
+          git init -q .agentkit-kit
+          git -C .agentkit-kit fetch -q --depth 1 "https://github.com/$kit.git" "${REF:-$sha}"
+          git -C .agentkit-kit checkout -q FETCH_HEAD
+
+      # the bot checked admin access; the workflow checks it, and the value, again
+      - id: check
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          LOGIN: ${{ steps.payload.outputs.login }}
+          KEY: ${{ steps.payload.outputs.key }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          USER_ID: ${{ steps.payload.outputs.user }}
+        run: |
+          dm() { jq -n --arg t "$1" '{text: $t}' | python3 .agentkit-kit/scripts/settings.py dm "$USER_ID" >/dev/null; }
+          value=$(jq -r .client_payload.value "$GITHUB_EVENT_PATH")
+          perm=$(gh api "repos/$REPO/collaborators/$LOGIN/permission" --jq .permission 2>/dev/null || echo none)
+          via=$(jq -r --arg k "$KEY" '.[] | select(.key == $k) | "\(.apply.via) \(.apply.name // "")"' .agentkit-kit/config/settings.json)
+          if [ "$perm" != admin ]; then
+            dm "Not changed: $LOGIN needs admin access to $REPO to change its settings."; via=none
+          elif ! why=$(python3 .agentkit-kit/scripts/settings.py validate "$KEY" "$value"); then
+            dm "Not changed: $why."; via=none
+          elif [ "${via% *}" != variable ] && [ "${via% *}" != caller ]; then
+            dm "Not changed: that one is not set through GitHub (/agentkit:settings in Claude Code says how)."; via=none
+          fi
+          { echo "via=${via% *}"; echo "name=${via#* }"; } >>"$GITHUB_OUTPUT"
+          echo "$KEY for $LOGIN: ${via% *}"
+
+      - id: variables
+        if: steps.check.outputs.via == 'variable'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-actions-variables: write  # the App's "Variables" repository permission
+
+      - name: Set the repo variable
+        if: steps.check.outputs.via == 'variable'
+        env:
+          GH_TOKEN: ${{ steps.variables.outputs.token }}
+          NAME: ${{ steps.check.outputs.name }}
+          KEY: ${{ steps.payload.outputs.key }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          USER_ID: ${{ steps.payload.outputs.user }}
+        run: |
+          value=$(jq -r .client_payload.value "$GITHUB_EVENT_PATH")
+          old=()
+          if was=$(gh variable get "$NAME" --repo "$REPO" 2>/dev/null); then old=("$was"); fi
+          if [ -n "$value" ]; then gh variable set "$NAME" --repo "$REPO" --body "$value"
+          else gh variable delete "$NAME" --repo "$REPO" 2>/dev/null || true; fi
+          python3 .agentkit-kit/scripts/settings.py changed "$REPO" "$KEY" "$value" ${old[@]+"${old[@]}"} \
+            | python3 .agentkit-kit/scripts/settings.py dm "$USER_ID" >/dev/null
+          echo "set $NAME"
+
+      - id: caller
+        if: steps.check.outputs.via == 'caller'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
+          private-key: ${{ secrets.AGENTKIT_APP_KEY }}
+          permission-contents: write  # the branch and its commit
+          permission-pull-requests: write
+          permission-workflows: write  # the commit changes .github/workflows/agentkit.yml
+
+      # merging stays the owner's call
+      - name: Open a pull request on the caller
+        if: steps.check.outputs.via == 'caller'
+        env:
+          GH_TOKEN: ${{ steps.caller.outputs.token }}
+          LOGIN: ${{ steps.payload.outputs.login }}
+          KEY: ${{ steps.payload.outputs.key }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          USER_ID: ${{ steps.payload.outputs.user }}
+          CALLER: .github/workflows/agentkit.yml
+        run: |
+          dm() { jq -n --arg t "$1" '{text: $t}' | python3 .agentkit-kit/scripts/settings.py dm "$USER_ID" >/dev/null; }
+          value=$(jq -r .client_payload.value "$GITHUB_EVENT_PATH")
+          base=$(gh api "repos/$REPO" --jq .default_branch)
+          meta=$(gh api "repos/$REPO/contents/$CALLER?ref=$base")
+          jq -r .content <<<"$meta" | base64 -d >caller.yml
+          cp caller.yml caller.old
+          if ! why=$(python3 .agentkit-kit/scripts/settings.py caller "$KEY" "$value" caller.yml); then
+            dm "Not changed: $why."; exit 0
+          fi
+          if cmp -s caller.yml caller.old; then dm "$KEY is already $value in $REPO's caller workflow."; exit 0; fi
+          branch="agentkit/setting-$KEY-$GITHUB_RUN_ID" title="agentkit: set $KEY to ${value:0:120}"
+          head=$(gh api "repos/$REPO/git/ref/heads/$base" --jq .object.sha)
+          gh api "repos/$REPO/git/refs" -f ref="refs/heads/$branch" -f sha="$head" >/dev/null
+          gh api -X PUT "repos/$REPO/contents/$CALLER" -f branch="$branch" -f sha="$(jq -r .sha <<<"$meta")" \
+            -f message="$title" -f content="$(base64 -w0 caller.yml)" >/dev/null
+          url=$(printf '%s\n' "Sets \`$KEY\` in the caller workflow, asked for by @$LOGIN from Slack (a settings card)." "" \
+                  "Merging applies it; closing this PR leaves things as they are." \
+            | gh pr create --repo "$REPO" --base "$base" --head "$branch" --title "$title" --body-file -)
+          dm "Pull request to set $KEY to $value in $REPO: $url. Merging it applies the change; closing it leaves things as they are."
+          echo "opened $url for $LOGIN"

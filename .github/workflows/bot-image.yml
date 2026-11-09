@@ -6,10 +6,10 @@ name: bot-image
 
 on:
   pull_request:
-    paths: ["bot/**", "scripts/card.py", "scripts/reply.py", "plugins/agentkit/scripts/board.py", ".github/workflows/bot-image.yml"]
+    paths: ["bot/**", "scripts/card.py", "scripts/reply.py", "scripts/settings.py", "config/settings.json", "plugins/agentkit/scripts/board.py", ".github/workflows/bot-image.yml"]
   push:
     branches: [main]
-    paths: ["bot/**", "scripts/card.py", "scripts/reply.py", "plugins/agentkit/scripts/board.py", ".github/workflows/bot-image.yml"]
+    paths: ["bot/**", "scripts/card.py", "scripts/reply.py", "scripts/settings.py", "config/settings.json", "plugins/agentkit/scripts/board.py", ".github/workflows/bot-image.yml"]
   workflow_dispatch:
 
 permissions:
@@ -39,7 +39,7 @@ jobs:
       - name: Build for the scan
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: .  # the kit's root: the image takes card.py, reply.py and board.py (bot/Dockerfile.dockerignore)
+          context: .  # the kit's root: the image takes card.py, reply.py, settings.py, board.py and the registry (bot/Dockerfile.dockerignore)
           file: bot/Dockerfile
           load: true
           tags: scan:latest
@@ -65,7 +65,7 @@ jobs:
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: .  # the kit's root: the image takes card.py, reply.py and board.py (bot/Dockerfile.dockerignore)
+          context: .  # the kit's root: the image takes card.py, reply.py, settings.py, board.py and the registry (bot/Dockerfile.dockerignore)
           file: bot/Dockerfile
           push: true
           tags: |
