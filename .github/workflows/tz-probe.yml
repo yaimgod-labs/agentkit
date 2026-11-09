@@ -1,0 +1,41 @@
+# Temporary: records what github.event.schedule holds when a schedule has a timezone (the kit's caller jobs match on
+# it). Disabled and removed once read.
+name: tz-probe
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+      timezone: "Asia/Jerusalem"
+    - cron: "2-59/5 * * * *"  # control, no timezone
+permissions: {}
+jobs:
+  probe:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          echo "schedule=[$SCHEDULE]"
+          jq -c '{schedule, timezone}' "$GITHUB_EVENT_PATH"
+
+  # manual: how long fetching and checking the Claude Code binary takes on a GitHub runner
+  cli:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          VERSION: 2.1.321
+        run: |
+          start=$(date +%s.%N)
+          base=https://downloads.claude.ai/claude-code-releases/$VERSION
+          want=$(curl -fsSL "$base/manifest.json" | jq -r '.platforms["linux-x64"].checksum')
+          curl -fsSL -o "$RUNNER_TEMP/claude" "$base/linux-x64/claude"
+          echo "$want  $RUNNER_TEMP/claude" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/claude"
+          fetched=$(date +%s.%N)
+          "$RUNNER_TEMP/claude" --version
+          done=$(date +%s.%N)
+          echo "fetch+check: $(echo "$fetched - $start" | bc) s; first start: $(echo "$done - $fetched" | bc) s"
