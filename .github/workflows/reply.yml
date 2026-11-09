@@ -63,6 +63,16 @@ jobs:
           permission-contents: write  # merging an approved research PR and deleting its branch
           permission-actions: read  # Load agentkit reads this run's referenced workflows
 
+      # only the Slack bot's own App may send a Slack event: anyone with write access can send a repository_dispatch, and
+      # its payload could name someone else. AGENTKIT_SLACK_BOT_APP is the bot's App slug when it has an App of its own
+      - id: sender
+        if: github.event_name == 'repository_dispatch'
+        env:
+          SENDER: ${{ github.event.sender.login }}
+          BOT: ${{ vars.AGENTKIT_SLACK_BOT_APP || steps.app.outputs.app-slug }}[bot]
+        run: |
+          [ "$SENDER" = "$BOT" ] || { echo "::error::refusing a Slack event sent by $SENDER, not by the Slack bot ($BOT); set AGENTKIT_SLACK_BOT_APP if the bot has its own GitHub App"; exit 1; }
+
       # the kit's scripts and actions, from the repo and commit this workflow itself was loaded from
       # (the caller's `uses:`), so no owner or ref is written down anywhere in the kit
       - name: Load agentkit
@@ -135,7 +145,8 @@ jobs:
 
       # without this a failed reply leaves the person waiting on an answer that never came
       - name: Hand over on failure
-        if: failure() || cancelled()
+        # a refused sender is not a reply: nothing to hand over
+        if: (failure() || cancelled()) && steps.sender.outcome != 'failure'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -181,6 +192,16 @@ jobs:
           private-key: ${{ secrets.AGENTKIT_APP_KEY }}
           permission-issues: write  # the new issue and its status
           permission-actions: read  # Load agentkit reads this run's referenced workflows
+
+      # only the Slack bot's own App may send a Slack event: anyone with write access can send a repository_dispatch, and
+      # its payload could name someone else. AGENTKIT_SLACK_BOT_APP is the bot's App slug when it has an App of its own
+      - id: sender
+        if: github.event_name == 'repository_dispatch'
+        env:
+          SENDER: ${{ github.event.sender.login }}
+          BOT: ${{ vars.AGENTKIT_SLACK_BOT_APP || steps.app.outputs.app-slug }}[bot]
+        run: |
+          [ "$SENDER" = "$BOT" ] || { echo "::error::refusing a Slack event sent by $SENDER, not by the Slack bot ($BOT); set AGENTKIT_SLACK_BOT_APP if the bot has its own GitHub App"; exit 1; }
 
       - name: Load agentkit
         env:
@@ -249,6 +270,16 @@ jobs:
           client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
           private-key: ${{ secrets.AGENTKIT_APP_KEY }}
           permission-actions: read  # Load agentkit reads this run's referenced workflows
+
+      # only the Slack bot's own App may send a Slack event: anyone with write access can send a repository_dispatch, and
+      # its payload could name someone else. AGENTKIT_SLACK_BOT_APP is the bot's App slug when it has an App of its own
+      - id: sender
+        if: github.event_name == 'repository_dispatch'
+        env:
+          SENDER: ${{ github.event.sender.login }}
+          BOT: ${{ vars.AGENTKIT_SLACK_BOT_APP || steps.app.outputs.app-slug }}[bot]
+        run: |
+          [ "$SENDER" = "$BOT" ] || { echo "::error::refusing a Slack event sent by $SENDER, not by the Slack bot ($BOT); set AGENTKIT_SLACK_BOT_APP if the bot has its own GitHub App"; exit 1; }
 
       - name: Load agentkit
         env:
@@ -360,6 +391,16 @@ jobs:
           client-id: ${{ vars.AGENTKIT_CLIENT_ID }}
           private-key: ${{ secrets.AGENTKIT_APP_KEY }}
           permission-actions: read  # Load agentkit reads this run's referenced workflows
+
+      # only the Slack bot's own App may send a Slack event: anyone with write access can send a repository_dispatch, and
+      # its payload could name someone else. AGENTKIT_SLACK_BOT_APP is the bot's App slug when it has an App of its own
+      - id: sender
+        if: github.event_name == 'repository_dispatch'
+        env:
+          SENDER: ${{ github.event.sender.login }}
+          BOT: ${{ vars.AGENTKIT_SLACK_BOT_APP || steps.app.outputs.app-slug }}[bot]
+        run: |
+          [ "$SENDER" = "$BOT" ] || { echo "::error::refusing a Slack event sent by $SENDER, not by the Slack bot ($BOT); set AGENTKIT_SLACK_BOT_APP if the bot has its own GitHub App"; exit 1; }
 
       - name: Load agentkit
         env:

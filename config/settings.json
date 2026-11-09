@@ -102,6 +102,19 @@
     "apply": {"via": "variable", "name": "AGENTKIT_SLACK_BOT"}
   },
   {
+    "key": "slack-bot-app",
+    "scope": "project",
+    "title": "The Slack bot's GitHub App",
+    "description": "The slug of the GitHub App the Slack bot sends its events as. The workflows act only on events this App sent. Empty: the kit's own App (when the bot shares it).",
+    "type": "string",
+    "default": "",
+    "options": [],
+    "other": true,
+    "validate": {"regex": "[a-z0-9-]*", "hint": "must be a GitHub App slug"},
+    "apply": {"via": "variable", "name": "AGENTKIT_SLACK_BOT_APP"},
+    "advanced": true
+  },
+  {
     "key": "card-channel",
     "scope": "project",
     "title": "Card channel",

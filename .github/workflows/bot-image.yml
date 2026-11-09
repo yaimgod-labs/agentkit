@@ -1,6 +1,7 @@
 # Builds the Slack bot image (bot/Dockerfile) on a GitHub-hosted runner and scans it with Trivy: a fixable HIGH or
-# CRITICAL finding fails the run. On main it pushes the image to GHCR and attests its digest, so a server can pull
-# `ghcr.io/<owner>/<repo>-bot@sha256:…` and verify it with `gh attestation verify`. Not a reusable workflow: it
+# CRITICAL finding fails the run. On main and on a release tag (v1.2.3) it pushes the image it scanned to GHCR and
+# attests its digest, so a server can pull `ghcr.io/<owner>/<repo>-bot@sha256:…` and verify it with
+# `gh attestation verify`. A release tag also gets the digest in its release notes. Not a reusable workflow: it
 # runs in the kit repo only, so it is exempt from the caller-permissions rule in tests/test_permissions.py.
 name: bot-image
 
@@ -9,6 +10,7 @@ on:
     paths: ["bot/**", "scripts/card.py", "scripts/reply.py", "scripts/settings.py", "config/settings.json", "plugins/agentkit/scripts/board.py", ".github/workflows/bot-image.yml"]
   push:
     branches: [main]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]  # GitHub ignores `paths` for tags: every release gets its image
     paths: ["bot/**", "scripts/card.py", "scripts/reply.py", "scripts/settings.py", "config/settings.json", "plugins/agentkit/scripts/board.py", ".github/workflows/bot-image.yml"]
   workflow_dispatch:
 
@@ -25,7 +27,10 @@ jobs:
       id-token: write
       attestations: write
     env:
-      PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+      PUSH: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,20 +41,24 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Build for the scan
+      # one build: the image Trivy scans is the image that is pushed (a second build could differ on a cache miss)
+      - name: Build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .  # the kit's root: the image takes card.py, reply.py, settings.py, board.py and the registry (bot/Dockerfile.dockerignore)
           file: bot/Dockerfile
           load: true
-          tags: scan:latest
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ github.sha }}
+            ${{ github.ref == 'refs/heads/main' && format('{0}:latest', steps.name.outputs.image) || '' }}
+            ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}:{1}', steps.name.outputs.image, github.ref_name) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Scan (fixable HIGH and CRITICAL fail the run)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: scan:latest
+          image-ref: ${{ steps.name.outputs.image }}:${{ github.sha }}
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
@@ -63,15 +72,14 @@ jobs:
 
       - if: env.PUSH == 'true'
         id: push
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .  # the kit's root: the image takes card.py, reply.py, settings.py, board.py and the registry (bot/Dockerfile.dockerignore)
-          file: bot/Dockerfile
-          push: true
-          tags: |
-            ${{ steps.name.outputs.image }}:latest
-            ${{ steps.name.outputs.image }}:${{ github.sha }}
-          cache-from: type=gha
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}
+        run: |
+          docker push --all-tags "$IMAGE"
+          digest=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$GITHUB_SHA" | grep -m1 "^$IMAGE@" | cut -d@ -f2)
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest for the pushed image"; exit 1; }
+          echo "digest=$digest" >>"$GITHUB_OUTPUT"
+          echo "pushed $IMAGE@$digest" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - if: env.PUSH == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -79,3 +87,24 @@ jobs:
           subject-name: ${{ steps.name.outputs.image }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+  # a release's notes name its image, so a server pins and verifies it without looking the digest up
+  notes:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write  # the release and its notes
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+      REF: ${{ needs.image.outputs.image }}@${{ needs.image.outputs.digest }}
+    steps:
+      - run: |
+          line="Slack bot image: \`$REF\`. Check it with \`gh attestation verify oci://$REF --repo $GITHUB_REPOSITORY\`."
+          if body=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null); then
+            grep -qF "$REF" <<<"$body" || printf '%s\n\n%s\n' "$body" "$line" | gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file -
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes "$line"
+          fi
