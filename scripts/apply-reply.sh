@@ -62,10 +62,11 @@ qlen=$(chars "$qarg")
 status() { "$here/set-status.sh" "$repo" "$1" "$2"; }
 comment() { printf '%s\n' "$2" | gh issue comment "$1" --repo "$repo" --body-file - >/dev/null; }
 pr_comment() { printf '%s\n' "$2" | gh pr comment "$1" --repo "$repo" --body-file - >/dev/null; }
-# the open agent PR of the issue (the search is fuzzy, so the head prefix is checked exactly)
+# the open agent PR of the issue (the search is fuzzy, so the head prefix is checked exactly). Never a fork's PR:
+# anyone can name a fork's branch agent/<n>-…, and a reply here merges, edits or closes the PR it finds
 agent_pr() {
-  gh pr list --repo "$repo" --state open --search "head:agent/$n-" --json number,headRefName \
-    --jq '[.[]|select(.headRefName|startswith("agent/'"$n"'-"))][0].number // empty'
+  gh pr list --repo "$repo" --state open --search "head:agent/$n-" --json number,headRefName,isCrossRepository \
+    --jq '[.[]|select(.isCrossRepository != true and (.headRefName|startswith("agent/'"$n"'-")))][0].number // empty'
 }
 # the issue a research issue answers, from the body's last marker (the kit appends it); empty when there is none
 parent() {

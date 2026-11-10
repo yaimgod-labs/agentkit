@@ -102,7 +102,8 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
-          HEAD: ${{ github.event.pull_request.head.ref }}
+          # empty for a fork's PR: its branch name is never an agent branch
+          HEAD: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref || '' }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -138,7 +139,8 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
-          HEAD: ${{ github.event.pull_request.head.ref }}
+          # empty for a fork's PR: its branch name is never an agent branch
+          HEAD: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref || '' }}
           BODY: ${{ github.event.pull_request.body }}
           PR: ${{ github.event.pull_request.number }}
           AUTO_MERGE: ${{ vars.AUTO_MERGE }}
@@ -186,7 +188,8 @@ jobs:
           AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}  # verifies Slack reply records (people.sh)
         run: |
           grep -qiE '^/decide (accept|reject)\b' <<<"$BODY" || { gh pr comment "$PR" --repo "$REPO" --body "agentkit: use \`/decide accept <why>\` or \`/decide reject <why>\`."; exit 0; }
-          n=$(gh pr view "$PR" --repo "$REPO" --json headRefName --jq .headRefName | sed -nE 's#^agent/([0-9]+)-.*#\1#p')
+          # a fork's PR is never an agent PR, whatever its branch is called
+          n=$(gh pr view "$PR" --repo "$REPO" --json headRefName,isCrossRepository --jq 'select(.isCrossRepository == false) | .headRefName' | sed -nE 's#^agent/([0-9]+)-.*#\1#p')
           [ -n "$n" ] || exit 0
           gh issue view "$n" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx type:rfc || { echo "#$n is not an RFC"; exit 0; }
           # the kit's /decide relays a person's Slack accept|reject on the issue. An agent posting as the kit is not a
@@ -243,7 +246,8 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
-          HEAD: ${{ github.event.pull_request.head.ref }}
+          # empty for a fork's PR: its branch name is never an agent branch
+          HEAD: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref || '' }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$HEAD")
