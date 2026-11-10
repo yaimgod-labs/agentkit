@@ -155,8 +155,8 @@ Every reusable workflow looks up, in its own run's record, which repo and commit
 
 Release flow:
 
-1. Merge to `main`. A scratch repo (`<owner>/agentkit-scratch`) is the canary: its caller uses `@main`.
-2. Run `scripts/canary.sh`. It files a known issue on scratch and waits until the issue reaches `status:approved` (pass) or `status:needs-human` (fail).
+1. Merge to `main`. A scratch repo of your own is the canary: its caller uses `@main`.
+2. Run `scripts/canary.sh <owner/scratch-repo>` (or set `AGENTKIT_CANARY`). It files a known issue on scratch and waits until the issue reaches `status:approved` (pass) or `status:needs-human` (fail).
 3. Only after a pass: tag `v1.x.y` and move `v1` to it. Projects pick it up on their next run.
 
 When a release adds labels, caller jobs or board stages, run `gh agentkit upgrade <owner/repo>` for each project: it adds the labels and the missing **Stage** options (cards keep their stage), and renames labels and stages a release renamed (issues and cards keep them; e.g. `status:needs-device-check` → `status:needs-verification`), and opens one PR that syncs the caller with the template, keeping the project's `with:` settings, `@ref` pins and extra jobs. `gh agentkit doctor` warns about missing stages.

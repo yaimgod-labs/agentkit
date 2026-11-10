@@ -156,7 +156,7 @@ One Dockerfile, one container, on the owner's server. Env: Slack tokens, GitHub 
 
 ## Evidence: paper test (2026-11-08)
 
-Eight real waiting messages from `agentkit-scratch` were drafted as cards. Five were decidable from the card alone (RFC accept/reject, a library choice, two yes/no questions, a vague-review reply). Three exposed gaps, now in this spec: no keyword for "close as already done / do not build" (→ `close`), no options in `STUCK:` (→ `ask`/`options`), and failed runs cannot be decided from a card (→ Attention variant with a log link). Caveat: scratch issues are synthetic; check against a real project's messages before step 2.
+Eight real waiting messages from the scratch repo were drafted as cards. Five were decidable from the card alone (RFC accept/reject, a library choice, two yes/no questions, a vague-review reply). Three exposed gaps, now in this spec: no keyword for "close as already done / do not build" (→ `close`), no options in `STUCK:` (→ `ask`/`options`), and failed runs cannot be decided from a card (→ Attention variant with a log link). Caveat: scratch issues are synthetic; check against a real project's messages before step 2.
 
 ## Decided by the owner (2026-11-08)
 

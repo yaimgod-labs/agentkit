@@ -264,7 +264,7 @@ def parse_all(value):
 
 
 def named_repo(question, repos):
-    """The served repo the question names ("…on ekg", "owner/ekg"), when exactly one is named; else None."""
+    """The served repo the question names ("…on shop", "owner/shop"), when exactly one is named; else None."""
     q = (question or "").lower()
     hits = [r for r in repos if re.search(rf"(?<![\w./-])({re.escape(r.lower())}|{re.escape(r.split('/')[-1].lower())})(?![\w/-])", q)]
     return hits[0] if len(hits) == 1 else None
