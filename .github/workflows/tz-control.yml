@@ -1,0 +1,15 @@
+# Temporary: a schedule without a timezone, beside tz-probe.yml, to tell whether a `timezone:` key stops a file's
+# schedules. Disabled and removed once read.
+name: tz-control
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+permissions: {}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          SCHEDULE: ${{ github.event.schedule }}
+        run: echo "schedule=[$SCHEDULE]"
