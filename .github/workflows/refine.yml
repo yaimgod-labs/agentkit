@@ -59,7 +59,7 @@ jobs:
           N: ${{ github.event.issue.number }}
         run: |
           pr=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
-            --jq '.[] | select(.head.ref | startswith("agent/" + env.N + "-")) | .number' | sed -n 1p) || pr=
+            --jq '.[] | select((.head.repo.full_name // "") == env.REPO and (.head.ref | startswith("agent/" + env.N + "-"))) | .number' | sed -n 1p) || pr=
           [ -n "$pr" ] || exit 0
           gh issue comment "$N" --repo "$REPO" --body "agentkit: this issue's PR #$pr is open. To answer its question, submit a \"Request changes\" review on #$pr with the details."
           echo "pr=$pr" >>"$GITHUB_OUTPUT"

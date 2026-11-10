@@ -538,8 +538,12 @@ jobs:
           Answer with the Comment button on this issue's card in Slack." | gh issue comment "$n" --repo "$REPO" --body-file -
           }
           judge() {
-            local pr=$1 head sha mergeable n labels kind files required doc out verdict unmet human failed
-            read -r head sha mergeable < <(gh pr view "$pr" --repo "$REPO" --json headRefName,headRefOid,mergeable --jq '"\(.headRefName) \(.headRefOid) \(.mergeable)"')
+            local pr=$1 head sha mergeable fork n labels kind files required doc out verdict unmet human failed
+            read -r head sha mergeable fork < <(gh pr view "$pr" --repo "$REPO" --json headRefName,headRefOid,mergeable,isCrossRepository \
+              --jq '"\(.headRefName) \(.headRefOid) \(.mergeable) \(.isCrossRepository)"')
+            # a fork can name its branch agent/<n>-… and bring its own workflow file, so its checks prove nothing:
+            # only a branch of this repo (pushed with write access) is an agent PR. Anything but `false` is refused
+            [ "$fork" = false ] || { echo "#$pr: not a branch of this repo; ignored"; return 0; }
             n=$(sed -nE 's#^agent/([0-9]+)-.*#\1#p' <<<"$head")
             [ -n "$n" ] || return 0
             # a PR that conflicts with its base gets no pull_request runs: send it back to the implementer,

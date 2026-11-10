@@ -181,6 +181,15 @@ FAKE_PRS='[{"number":13,"headRefName":"agent/70-other"}]' apply retry "" alice
 ok "retry: agent/70- is not 7's PR" nolog '^pr comment'
 ok "retry without a PR: status:refining" count '^issue edit 7 .*--add-label status:refining' 1
 ok "retry without a PR: never in-progress" nolog 'status:in-progress'
+# a fork may name its branch agent/7-…: never the agent PR, even listed first
+fork='{"number":66,"headRefName":"agent/7-evil","isCrossRepository":true}'
+FAKE_PRS="[$fork]" apply retry "" alice
+ok "retry: a fork's agent/7- branch is not 7's PR" nolog '^pr comment'
+FAKE_PRS="[$fork,{\"number\":12,\"headRefName\":\"agent/7-fix-login\",\"isCrossRepository\":false}]" apply retry "" alice
+ok "retry: the repo's own PR wins over a fork's listed first" count '^pr comment 12 ' 1
+ok "retry: nothing is written to the fork's PR" nolog '^pr [a-z]* 66 '
+FAKE_PRS="[$fork]" FAKE_LABELS="status:needs-approval type:research" apply approve-research "" alice
+ok "approve-research: a fork's PR is never merged" nolog '^pr merge'
 apply guide "use the v2 endpoint" alice
 ok "guide without a PR: status:refining" count '^issue edit 7 .*--add-label status:refining' 1
 ok "guide without a PR: no comment (the guidance is the person's own comment)" nolog '^issue comment' '^pr comment'
