@@ -275,15 +275,15 @@ menu = [e for b in settings.card(settings.load(), "o/r", "list?", '{"match": "li
 expect("settings: every menu value parses", all(core.parse_pick(o["value"])[0] == "o/r"
                                               for g in menu["option_groups"] for o in g["options"]), menu)
 # answered without the model, the repo a question names, Apply all
-reg, served = settings.load(), ["o/agentkit-scratch", "o/ekg"]
+reg, served = settings.load(), ["o/sandbox", "o/shop"]
 for q, want in [("what can you change?", "list"), ("what are all the setting you can change", "list"),
                 ("what changes to setting can you do", "list"), ("change my nudge hours", "nudge-hours"),
-                ("Repos the Slack bot serves", "bot-repos"), ("Tasks in flight on ekg", "wip"), ("set retro time", "retro-cron"),
+                ("Repos the Slack bot serves", "bot-repos"), ("Tasks in flight on shop", "wip"), ("set retro time", "retro-cron"),
                 ("nudge hours to 08-18", None), ("retro time and project timezone", None), ("change the timezone to israel", None),
                 ("why is the sky blue", None)]:
     expect(f"quick: {q!r} -> {want}", core.quick(q, reg, served) == want, core.quick(q, reg, served))
-for q, want in [("tasks in flight on ekg", "o/ekg"), ("on o/agentkit-scratch please", "o/agentkit-scratch"),
-                ("ekg or agentkit-scratch?", None), ("the ekgs", None), ("nudge hours", None)]:
+for q, want in [("tasks in flight on shop", "o/shop"), ("on o/sandbox please", "o/sandbox"),
+                ("shop or sandbox?", None), ("the shops", None), ("nudge hours", None)]:
     expect(f"named repo: {q!r} -> {want}", core.named_repo(q, served) == want, core.named_repo(q, served))
 v = settings.apply_all_value("o/r", [("timezone", "Asia/Jerusalem"), ("auto-merge", True)])
 expect("apply all: round trip", core.parse_all(v) == ("o/r", [("timezone", "Asia/Jerusalem"), ("auto-merge", "true")]), v)
@@ -294,8 +294,8 @@ for bad in ["all|o/r|[]", "all|../r|[[\"wip\",\"3\"]]", "all|o/r|[[\"Bad\",\"3\"
 body = core.settings_changes("o/r", [("wip", "3"), ("retro-cron", "0 10 * * 4")], "alice", "U1")[1]
 expect("apply all: one setting event with the changes", body == {"event_type": "agentkit-slack-setting", "client_payload": {
     "changes": [{"key": "wip", "value": "3"}, {"key": "retro-cron", "value": "0 10 * * 4"}], "login": "alice", "slack_user": "U1"}}, body)
-expect("repo menu: parses", core.parse_pick("repo|o/ekg|wip", "repo") == ("o/ekg", "wip"))
-try: core.parse_pick("pick|o/ekg|wip", "repo"); expect("repo menu: a pick is not a repo switch", False)
+expect("repo menu: parses", core.parse_pick("repo|o/shop|wip", "repo") == ("o/shop", "wip"))
+try: core.parse_pick("pick|o/shop|wip", "repo"); expect("repo menu: a pick is not a repo switch", False)
 except ValueError: expect("repo menu: a pick is not a repo switch", True)
 body = core.settings_ask("o/r", "q", "alice", "U1", ("D1", "1.2"), {}, None, served)[1]
 expect("settings: ask carries the repos to switch to", body["client_payload"]["repos"] == served and len(body["client_payload"]) <= 10, body)

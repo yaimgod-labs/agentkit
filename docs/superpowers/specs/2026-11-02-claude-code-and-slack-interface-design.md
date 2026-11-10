@@ -130,9 +130,9 @@ On turns on:
 - **Does the GitHub Slack app post when a filtered label is added to an issue,** and are the agent's later comments threaded under it so replies land on the right issue? Spike this on the scratch repo before building on it. If it doesn't, the fallback is a small Slack app of our own, which needs a hosted endpoint for replies. That would be a separate decision.
 - Slack ↔ GitHub account linking (`/github signin`) is required for replies to count as the person's. Doctor should check it, or the docs must say it.
 
-## Spike result (2026-11-03, agentkit-scratch, test channel)
+## Spike result (2026-11-03, scratch repo, test channel)
 
-Subscription: `/github subscribe yaimgod-labs/agentkit-scratch issues comments +label:"action:required"`, defaults (`pulls commits releases deployments`) unsubscribed.
+Subscription: `/github subscribe <owner>/<scratch-repo> issues comments +label:"action:required"`, defaults (`pulls commits releases deployments`) unsubscribed.
 
 | Question | Answer |
 |---|---|

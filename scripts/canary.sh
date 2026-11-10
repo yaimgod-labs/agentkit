@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Canary: run one known issue through the full lifecycle on a repo whose caller
-# workflow tracks this kit's main branch (agentkit-scratch). Move v1 only after a pass.
-# Usage: scripts/canary.sh [owner/repo] [timeout-minutes] [start-label]
+# workflow tracks this kit's main branch (a scratch repo). Move v1 only after a pass.
+# Usage: scripts/canary.sh <owner/repo> [timeout-minutes] [start-label]   (owner/repo may come from AGENTKIT_CANARY)
 # start-label defaults to status:ready; status:refining also runs the refine stage first.
 # Exit 0 (CANARY PASS) when the issue reaches status:approved (its PR and issue are then closed unmerged), or, with
 # AUTO_MERGE=true where approved lasts only a moment, when the gate merged its agent PR and the issue closed as completed.
 # The task changes every run (a new stamp in src/canary.js), so it is never already done, and repeated auto-merged
 # runs replace one file instead of piling up code. A failed GitHub read is retried, not fatal.
 set -euo pipefail
-repo=${1:-$(gh repo view --json owner --jq .owner.login)/agentkit-scratch}  # default: <kit owner>/agentkit-scratch
+repo=${1:-${AGENTKIT_CANARY:?usage: scripts/canary.sh <owner/repo> (or set AGENTKIT_CANARY)}}
 deadline=$(( $(date +%s) + ${2:-45} * 60 ))
 start=${3:-status:ready}
 stamp=$(date -u +%Y%m%dT%H%MZ)

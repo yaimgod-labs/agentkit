@@ -195,7 +195,7 @@ message that is just a personal or server setting's name ("change my nudge hours
 anything else goes to a repo: the bot posts "⏳ Looking that up…" and sends `repository_dispatch`
 `agentkit-slack-settings` `{question, login, slack_user, slack_channel, slack_ts, now, key, repos}`.
 
-**Which repo.** One the message names ("…on ekg"), else the one the person last asked about (kept in the prefs file),
+**Which repo.** One the message names ("…on shop"), else the one the person last asked about (kept in the prefs file),
 else the first in `AGENTKIT_REPOS` they can write to; the one used is remembered, so nobody names it twice. A project
 card carries a repo menu while the bot serves more than one: switching reloads the card for that repo, in place, and
 remembers it. `repos` is that list; `now` holds the values only the bot knows (the person's own settings, the bot's
