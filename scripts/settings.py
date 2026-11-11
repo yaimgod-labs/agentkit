@@ -95,7 +95,7 @@ def how(e):
     if a["via"] == "prefs":
         return "your own setting: ask the bot (applies at once)"
     if a["via"] == "variable":
-        return f"gh variable set {a['name']} --body <value>"
+        return f"gh variable set {a['name']} --repo <owner/repo> --body <value>"
     if a["via"] == "server":
         return f"set {a['name']} in the bot's environment on the server, then restart the bot"
     jobs = a["job"] if isinstance(a["job"], list) else [a["job"]]
@@ -113,7 +113,8 @@ def show(entries, query=""):
 
     for e in hits:
         opts = [text(o) for o in e["options"]] + (["other…"] if e.get("other") else [])
-        print(f"{e['key']} ({e['scope']}{', advanced' if e.get('advanced') else ''}): {e['title']}")
+        who = "just for you" if e["scope"] == "user" else "whole project"
+        print(f"{e['key']} ({who}{', advanced' if e.get('advanced') else ''}): {e['title']}")
         print(f"  {e['description']}")
         print(f"  default: {text(e['default'])}" + (f" · options: {', '.join(opts)}" if opts else ""))
         print(f"  change: {how(e)}")
@@ -399,8 +400,8 @@ def entry_blocks(entries, entry, repo, options=(), state=None, switch=True):
         hint = ""
     note = {"prefs": "🙋 Just for you; a click applies it at once.",
             "variable": f"⚙️ For everyone on {link(repo)}; needs admin access there.",
-            "caller": f"⚙️ For everyone on {link(repo)}: a click opens a pull request on its caller workflow, and "
-                      "merging it is yours. Needs admin access."}
+            "caller": f"⚙️ For everyone on {link(repo)}: a click opens a pull request that changes its "
+                      "agentkit.yml; merging it is yours. Needs admin access."}
     return blocks + ([actions] if els else []) + [_context((hint + " " if hint else "") + note[a["via"]])]
 
 
@@ -522,7 +523,7 @@ def set_caller_zone(caller, v):
             out.append(f'{m.group(1)}  timezone: "{v}"\n')
         k += 1
     if not caller_crons(caller):
-        raise ValueError("the caller workflow has no schedule")
+        raise ValueError("agentkit.yml has no schedule")
     return "".join(out)
 
 
@@ -541,7 +542,7 @@ def set_caller_input(caller, entry, v):
     ValueError when this is not a plain one-line edit (a cron, a variable, a multi-line value, an expression)."""
     a, later = entry["apply"], "change it in Claude Code with /agentkit:settings"
     if a["via"] != "caller" or "input" not in a:
-        raise ValueError(f"not a `with:` input of the caller: {later}")
+        raise ValueError(f"not a `with:` input in agentkit.yml: {later}")
     s = json.dumps(v) if isinstance(v, bool) else str(v)
     if "\n" in s or "${{" in s:
         raise ValueError(f"a multi-line value or an expression: {later}")
@@ -571,7 +572,7 @@ def set_caller_input(caller, entry, v):
             lines.insert(w + 1, line)
         hit = True
     if not hit:
-        raise ValueError(f"the caller has no {'/'.join(jobs)} job")
+        raise ValueError(f"agentkit.yml has no {'/'.join(jobs)} job")
     return "".join(lines)
 
 

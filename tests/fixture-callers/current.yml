@@ -46,7 +46,7 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
 
   triage:
-    if: github.event_name == 'issues' && github.event.action == 'opened' && vars.AGENTKIT_INTERFACE == 'claude-slack'
+    if: github.event_name == 'issues' && github.event.action == 'opened' && contains(fromJSON('["slack","claude-slack"]'), vars.AGENTKIT_INTERFACE)
     uses: example-org/agentkit/.github/workflows/triage.yml@main
     with:
       agentkit-ref: main
@@ -58,7 +58,7 @@ jobs:
       (github.event_name == 'issues' && github.event.label.name == 'status:refining') ||
       (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
        github.event.comment.user.type != 'Bot' && contains(github.event.issue.labels.*.name, 'status:needs-info') &&
-       vars.AGENTKIT_INTERFACE != 'claude-slack')
+       !contains(fromJSON('["slack","claude-slack"]'), vars.AGENTKIT_INTERFACE))
     uses: example-org/agentkit/.github/workflows/refine.yml@main
     with:
       agentkit-ref: main
@@ -96,7 +96,7 @@ jobs:
        vars.AGENTKIT_SLACK_BOT == 'true') ||
       (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
        github.event.comment.user.type != 'Bot' && !startsWith(github.event.comment.body, '/') &&
-       vars.AGENTKIT_INTERFACE == 'claude-slack' &&
+       contains(fromJSON('["slack","claude-slack"]'), vars.AGENTKIT_INTERFACE) &&
        (contains(github.event.issue.labels.*.name, 'action:required') ||
         contains(github.event.issue.labels.*.name, 'status:blocked')))
     uses: example-org/agentkit/.github/workflows/reply.yml@main

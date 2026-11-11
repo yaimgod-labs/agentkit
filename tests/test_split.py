@@ -1,4 +1,4 @@
-"""scripts/split.py: refine's `split` key and the split proposal comment (Claude Code + Slack mode)."""
+"""scripts/split.py: refine's `split` key and the split proposal comment (Slack mode)."""
 import json, subprocess, sys
 from pathlib import Path
 

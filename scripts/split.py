@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The split proposal refine posts for a large task (Claude Code + Slack mode). Python 3.9+, stdlib only. Agent text is
+"""The split proposal refine posts for a large task (Slack mode). Python 3.9+, stdlib only. Agent text is
 untrusted: it is validated here and escaped before it reaches a comment.
 
   split.py eligible < verdict-json

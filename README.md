@@ -13,7 +13,7 @@ backlog ──(you)──▶ refining ──refine──▶ ready ──dispatch
                         your answer moves it on)
 ```
 
-In the Claude Code + Slack mode ([below](#claude-code--slack-mode)) a new issue starts at `refining` by itself, and refine can stop at `needs-approval` (a research recommendation, an RFC decision or a split proposal) until you answer.
+In the Slack mode ([below](#slack-mode)) a new issue starts at `refining` by itself, and refine can stop at `needs-approval` (a research recommendation, an RFC decision or a split proposal) until you answer.
 
 | Step | Trigger | What runs |
 |---|---|---|
@@ -54,16 +54,7 @@ Per project, all of this is set in the caller: the crons under `schedule:`, and 
 
 Dependencies: `.github/dependabot.yml` (added by `init`/`upgrade`) opens weekly update PRs for GitHub Actions; add your package managers. They get the same review jobs and never auto-merge. Dependabot's runs only see Dependabot secrets, so also add `AGENTKIT_APP_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` under **Settings → Secrets and variables → Dependabot**.
 
-### Slack
-
-No bot of our own: the [GitHub app for Slack](https://github.com/integrations/slack), one channel per project.
-
-1. In the channel: `/github subscribe <owner/repo> issues pulls discussions releases`, then `/github unsubscribe <owner/repo> commits deployments`.
-2. Cut the agents' churn: `/github subscribe <owner/repo> +label:"status:needs-human"`. The app keeps one label filter per subscription, so the daily digest covers the other statuses that wait on you.
-3. Reply to an issue from its Slack thread; it lands on the issue, so an answer on a `needs-info` issue re-runs refine.
-4. For the digest: create a Slack incoming webhook for the channel and `gh secret set SLACK_WEBHOOK_URL --repo <owner/repo>`. The retro arrives through the Discussions subscription (in the Slack mode through the webhook instead).
-
-For the stricter mode where you answer from Slack, see [Claude Code + Slack mode](#claude-code--slack-mode).
+Digest in Slack: create an incoming webhook for the channel and `gh secret set SLACK_WEBHOOK_URL --repo <owner/repo>`. To answer agents from Slack, see [Slack mode](#slack-mode).
 
 Repo variables: `AGENTKIT_WIP` (2), `AGENTKIT_BASE` (PR target if not the default branch), `AGENTKIT_RUNNER`, `AUTO_MERGE`, plus `AGENTKIT_CLIENT_ID` / `AGENTKIT_PROJECT` set by the CLI. The full list is in [Settings](#settings).
 
@@ -90,18 +81,19 @@ In Claude Code (the agentkit plugin):
 | `/board <n>` | one task in full: status, what it is, where it stands, what it needs from you |
 | `/board move <n> <pos>` | reorders Up next by writing the board's **Rank** number field, which the dispatcher reads first (`gh agentkit upgrade` adds the field to an older board) |
 | `/board unblock <n>` | a `blocked` task goes back to `refining` |
+| `/board replace <n> <b>` | #b takes the place of the closed blocker that held #n; #n goes back to `ready` |
 | `/board unlink <n> <b>` | removes a wrong blocker; refine will not add it back |
 | `/board done <n>` | closes a `mode:human` task |
-| `/task <what you want>` | refines the request with you in the chat, then files it: `ready` (blockers and any research question linked first), `backlog` while a size m/l split waits for your OK |
+| `/task <what you want>` | a question is filed as research and a design problem as an RFC; anything else it refines with you in the chat, then files: `ready` (blockers and any research question linked first), `backlog` while a size m/l split waits for your OK |
 
 Reading and writing the board's Rank needs the `project` scope: `gh auth refresh -s project`.
 
-## Claude Code + Slack mode
+## Slack mode
 
-Opt-in per project: you steer from Claude Code (`/task`, `/board`) and answer agents from Slack. Off unless the repo variable `AGENTKIT_INTERFACE=claude-slack` is set; off, everything above behaves as before.
+Opt-in per project: you steer from Claude Code (`/task`, `/board`) and answer agents from Slack. Off unless the repo variable `AGENTKIT_INTERFACE=slack` is set; off, everything above behaves as before.
 
 ```
-gh agentkit upgrade <owner/repo> --interface claude-slack   # also on setup and init
+gh agentkit upgrade <owner/repo> --interface slack   # also on setup and init
 ```
 
 (`--interface slack-bot --card-channel C…` is the same mode with the Slack bot's cards on top: `docs/slack-bot.md`.)
@@ -205,8 +197,8 @@ Loose ideas start in Discussions (**Ideas**; `setup` enables Discussions). When 
 
 | Question | Issue | Output | Then |
 |---|---|---|---|
-| "what is true / what are the options?" | `type:research` (`/research <question>` or the Research form) | `docs/research/<slug>.md` | feeds an RFC or a feature |
-| "how should we build it?" | `type:rfc` (`/rfc <problem>` or the RFC form) | `docs/rfcs/NNNN-slug.md`, `status: proposed`: options with for and against, recommendation, consequences, rejected options, open questions, threat model when security is involved | you `/decide` on the PR, merge, then `/plan` the accepted RFC into feature issues |
+| "what is true / what are the options?" | `type:research` (`/task <question>` or the Research form) | `docs/research/<slug>.md` | feeds an RFC or a feature |
+| "how should we build it?" | `type:rfc` (`/task <problem to design for>` or the RFC form) | `docs/rfcs/NNNN-slug.md`, `status: proposed`: options with for and against, recommendation, consequences, rejected options, open questions, threat model when security is involved | you `/decide` on the PR, merge, then `/plan` the accepted RFC into feature issues |
 
 Both run through the normal lifecycle (refine → implement → review); the agent writes docs only and never decides an RFC. Research runs alone get web search and fetch, to check primary sources. Decision records in `docs/decisions/` are what later agents and reviewers hold the code to.
 
@@ -251,4 +243,4 @@ When a single skill from a disallowed plugin is worth having, copy it into `plug
 
 ## Development
 
-`tests/run.sh` (shellcheck, hook tests, migration tests) and `actionlint`. `scripts/make-template.sh <dir>` builds the template repo from `templates/`.
+`tests/run.sh` (shellcheck, hook tests, migration tests) and `actionlint`. Wording people read follows [docs/glossary.md](docs/glossary.md); `tests/test_terms.py` fails on a retired term. `scripts/make-template.sh <dir>` builds the template repo from `templates/`.

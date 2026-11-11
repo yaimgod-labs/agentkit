@@ -71,9 +71,16 @@ WAITING = ("status:needs-info", "status:needs-human", "status:needs-verification
 IN_PROGRESS = ("status:in-progress", "status:review", "status:changes-requested", "status:approved", "status:refining")
 STAGE = {
     "backlog": "Backlog", "ready": "Ready", "in-progress": "In progress", "review": "Review",
-    "changes-requested": "Changes requested", "approved": "Approved", "blocked": "Blocked", "needs-human": "Needs human",
+    "changes-requested": "Changes requested", "approved": "Approved", "blocked": "Blocked", "needs-human": "Needs you",
     "refining": "Refining", "needs-info": "Needs info", "needs-verification": "Needs verification",
     "needs-approval": "Needs approval",
+}
+# what a status is called when a person reads it (/board, the Slack board and cards, the digest's headings); STAGE
+# above is the board's own Stage option
+SAYS = {
+    "needs-info": "Needs your answer", "needs-approval": "Needs your approval", "needs-verification": "Needs your check",
+    "needs-human": "Needs you", "blocked": "Blocked", "approved": "Approved", "backlog": "Backlog", "refining": "Being planned",
+    "ready": "Up next", "in-progress": "Being built", "review": "In review", "changes-requested": "In review",
 }
 
 
@@ -183,9 +190,10 @@ def render(doc):
     est = doc.get("estimates") or {}
     o = doc.get("order") or {}
 
-    def line(i):
+    def line(i, section=""):
         n = i["number"]
-        parts = [f"#{n} {i.get('title', '')}", STAGE.get(status_of(i).replace("status:", ""), status_of(i) or "No status")]
+        says = SAYS.get(status_of(i).replace("status:", ""), status_of(i) or "No status")
+        parts = [f"#{n} {i.get('title', '')}"] + ([says] if says != section else [])  # not what the heading says already
         if str(n) in est:
             parts.append(est[str(n)])
         if waiting(i):
@@ -225,7 +233,7 @@ def render(doc):
     for title, items in (("Waiting on you", waiting_on_you), ("In progress", in_progress), ("Up next", up_next), ("Blocked", blocked)):
         out += [f"## {title}", ""]
         for i in items:
-            out.append(line(i))
+            out.append(line(i, title))
             if title == "Blocked":
                 out += [f"  - {r}" for r in i.get("block_reasons") or []]
         if not items:

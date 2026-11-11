@@ -45,7 +45,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+HERE = Path(__file__).resolve().parent
+sys.path[:0] = [str(HERE), str(HERE.parent / "plugins/agentkit/scripts")]  # the bot image has both in one folder
+import board  # noqa: E402
 import reply  # noqa: E402
 
 TITLE_MAX, ASK_MAX, BUTTONS_MAX = 80, 160, 3
@@ -225,7 +227,7 @@ def outcome(issue):
     if issue.get("state") == "CLOSED":
         return "Closed" + (" as done" if issue.get("stateReason") == "COMPLETED" else "")
     status = next((l[len("status:"):] for l in issue.get("labels", []) if l.startswith("status:")), "")
-    return f"No longer waiting: now {status}" if status else "No longer waiting"
+    return f"No longer waiting: {board.SAYS.get(status, status).lower()}" if status else "No longer waiting"
 
 
 def resolve(issue):

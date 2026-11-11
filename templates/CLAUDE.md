@@ -40,4 +40,4 @@ Work comes from GitHub issues; status is the `status:*` label (the board mirrors
 backlog → refining → ready → in-progress → review → approved → merged (a person merges).
 Side exits: needs-info (questions for a person), needs-verification (a person checks the PR's Human verification items), needs-human (with a `reason:*`).
 `type:research` and `type:rfc` issues produce a doc, not code; `type:debt` is cleanup the dispatcher takes in turn.
-Use `/agentkit:plan` to break a PRD into issues and `/agentkit:next` to work the top ready issue locally.
+Use `/agentkit:task` to add work, `/agentkit:board` to see and reorder it, and `/agentkit:plan` to break a PRD into issues.

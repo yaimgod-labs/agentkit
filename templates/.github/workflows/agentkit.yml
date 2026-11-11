@@ -49,20 +49,20 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
 
   triage:
-    # Claude Code + Slack mode (AGENTKIT_INTERFACE=claude-slack): a new issue by a trusted author refines on its own
-    if: github.event_name == 'issues' && github.event.action == 'opened' && vars.AGENTKIT_INTERFACE == 'claude-slack'
+    # Slack mode (AGENTKIT_INTERFACE=slack): a new issue by a trusted author refines on its own
+    if: github.event_name == 'issues' && github.event.action == 'opened' && contains(fromJSON('["slack","claude-slack"]'), vars.AGENTKIT_INTERFACE)
     uses: your-org/agentkit/.github/workflows/triage.yml@v1
     secrets:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
 
   refine:
     # status:refining, or a person (not a bot) answering on a status:needs-info issue
-    # (in the Claude Code + Slack mode the reply job takes that answer and sets status:refining)
+    # (in the Slack mode the reply job takes that answer and sets status:refining)
     if: >-
       (github.event_name == 'issues' && github.event.label.name == 'status:refining') ||
       (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
        github.event.comment.user.type != 'Bot' && contains(github.event.issue.labels.*.name, 'status:needs-info') &&
-       vars.AGENTKIT_INTERFACE != 'claude-slack')
+       !contains(fromJSON('["slack","claude-slack"]'), vars.AGENTKIT_INTERFACE))
     uses: your-org/agentkit/.github/workflows/refine.yml@v1
     secrets:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}
@@ -88,7 +88,7 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   reply:
-    # Claude Code + Slack mode (AGENTKIT_INTERFACE=claude-slack): a person's answer on a waiting issue,
+    # Slack mode (AGENTKIT_INTERFACE=slack): a person's answer on a waiting issue,
     # posted from its Slack card's Comment button, carries out the reply's action (`/` commands go to their own jobs);
     # with the Slack bot, its button clicks, its `+ Add task` (a new issue that goes to refinement) and settings asked
     # in Slack (the answer and a project setting picked on it) land here too
@@ -99,7 +99,7 @@ jobs:
        vars.AGENTKIT_SLACK_BOT == 'true') ||
       (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
        github.event.comment.user.type != 'Bot' && !startsWith(github.event.comment.body, '/') &&
-       vars.AGENTKIT_INTERFACE == 'claude-slack' &&
+       contains(fromJSON('["slack","claude-slack"]'), vars.AGENTKIT_INTERFACE) &&
        (contains(github.event.issue.labels.*.name, 'action:required') ||
         contains(github.event.issue.labels.*.name, 'status:blocked')))
     uses: your-org/agentkit/.github/workflows/reply.yml@v1
@@ -149,7 +149,7 @@ jobs:
     uses: your-org/agentkit/.github/workflows/digest.yml@v1
     # with:
     #   statuses: |            # one `label|heading` per line, any labels; default: the statuses that wait on a person
-    #     status:needs-human|Handed over to you
+    #     status:needs-human|Needs you
     #     priority:high|Urgent
     secrets:
       AGENTKIT_APP_KEY: ${{ secrets.AGENTKIT_APP_KEY }}

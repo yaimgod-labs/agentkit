@@ -330,14 +330,14 @@ ok "approve-split: /plan" logs '^> /plan$'
 ok "approve-split: no label change" nolog '^issue edit'
 
 # done: close as completed
-FAKE_LABELS="status:ready mode:human action:required" AGENTKIT_INTERFACE=claude-slack apply "done" "" alice
+FAKE_LABELS="status:ready mode:human action:required" AGENTKIT_INTERFACE=slack apply "done" "" alice
 ok "done: closes 7 completed" count '^issue close 7 --repo o/r --reason completed' 1
 ok "done: clears the status and action:required" count '^issue edit 7 --repo o/r --remove-label status:ready --remove-label action:required$' 1
 ok "done: clears the status before closing" before '^issue edit 7 ' '^issue close 7 '
 
 # close: the reason recorded by the person, the status cleared, then closed (not planned, or completed when the work
 # is done already)
-FAKE_LABELS="status:needs-info action:required" AGENTKIT_INTERFACE=claude-slack apply close $'not needed\nany more <!-- x -->' alice
+FAKE_LABELS="status:needs-info action:required" AGENTKIT_INTERFACE=slack apply close $'not needed\nany more <!-- x -->' alice
 ok "close: one comment on 7" count '^issue comment 7 ' 1
 ok "close: the comment names the person and the reason, on one line" \
   [ "$(posted '^issue comment 7 ')" = '**Closed by @alice:** not needed any more &lt;!-- x -->' ]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The recommendation of a research or RFC doc, quoted for the kit's needs-approval comment (Claude Code + Slack mode).
+"""The recommendation of a research or RFC doc, quoted for the kit's needs-approval comment (Slack mode).
 Python 3.9+, stdlib only.
 
   recommendation.py research|rfc [MAX_CHARS] < doc.md

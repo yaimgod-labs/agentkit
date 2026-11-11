@@ -27,13 +27,17 @@ def load_users(path):
     return users
 
 
+NOT_LINKED = ("Your Slack account is not linked to a GitHub login. Ask the bot's owner to add your Slack member ID "
+              "(your Slack profile → ⋮ → Copy member ID) to the bot's users.json.")
+
+
 def authorize(slack_id, users, permission_of, allowed=WRITE):
     """(login, None) when this Slack user is mapped and has write access now (or one of `allowed`, such as ADMIN),
     else (None, reason for the person). `permission_of(login)` asks GitHub; it is called on every interaction, never
     cached."""
     login = users.get(slack_id)
     if login is None:
-        return None, "Your Slack account is not linked to a GitHub login. Ask the owner to add you."
+        return None, NOT_LINKED
     if permission_of(login) not in allowed:
         if allowed is ADMIN:
             return None, f"{login} needs admin access to this repository to change its settings."
@@ -57,7 +61,7 @@ def dispatch(repo, n, text, login):
 
 # --- App Home: the board -------------------------------------------------------------------------------------------
 
-SECTIONS = (("waiting", "Waiting on you"), ("in_progress", "In progress"), ("next", "Next up"), ("done", "Done this week"))
+SECTIONS = (("waiting", "Waiting on you"), ("in_progress", "In progress"), ("next", "Up next"), ("done", "Done this week"))
 # (waiting items, items in each other section) per repo, tried in order until the view fits Slack's 100 blocks
 CAPS = ((8, 5), (5, 4), (4, 3), (3, 2), (2, 1), (1, 1), (1, 0))
 VIEW_MAX = 100
@@ -123,7 +127,8 @@ def _item(repo, key, issue, card_blocks, sent):
             return blocks
         return blocks[:1] + [_context(f"✓ Sent: {esc(clip(reply, 80))} · the board updates when GitHub does")]
     if key == "in_progress":
-        stage = next((l[len("status:"):].replace("-", " ") for l in issue.get("labels", []) if l.startswith("status:")), "")
+        import board  # the kit's one name per status
+        stage = next((board.SAYS.get(l[len("status:"):], "").lower() for l in issue.get("labels", []) if l.startswith("status:")), "")
         return [_section(f"<{url}|#{n}> {title}" + (f" · {stage}" if stage else ""))]
     if key == "next":
         return [_section(f"<{url}|#{n}> {title}" + (f" · {issue['note']}" if issue.get("note") else ""))]

@@ -34,7 +34,7 @@ check "status:review" status:needs-human "7 --repo o/r --remove-label status:rev
 check "status:needs-human reason:flaky" status:in-progress \
   "7 --repo o/r --remove-label status:needs-human --remove-label reason:flaky --add-label status:in-progress"
 check "status:needs-human reason:env" status:needs-human "7 --repo o/r --remove-label reason:env --add-label status:needs-human --add-label reason:agent-error" reason:agent-error
-S=claude-slack
+S=slack
 check "status:review" status:needs-info "7 --repo o/r --remove-label status:review --add-label status:needs-info --add-label action:required" "" $S
 check "status:needs-info action:required" status:refining \
   "7 --repo o/r --remove-label status:needs-info --remove-label action:required --add-label status:refining" "" $S

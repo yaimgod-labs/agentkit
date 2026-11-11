@@ -1,4 +1,4 @@
-"""scripts/done.py: the Slack "task done" text for a merged agent PR (Claude Code + Slack mode)."""
+"""scripts/done.py: the Slack "task done" text for a merged agent PR (Slack mode)."""
 import json, subprocess, sys
 from pathlib import Path
 
