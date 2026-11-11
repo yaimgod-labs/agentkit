@@ -280,7 +280,7 @@ def on_add_task(ack, body, client):
         "type": "modal", "callback_id": "task", "private_metadata": repo,
         "title": {"type": "plain_text", "text": "Add task"}, "submit": {"type": "plain_text", "text": "File it"},
         "blocks": [
-            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"A new issue in {core.esc(repo)}, refined by the kit."}]},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"A new task in {core.esc(repo)}. agentkit plans it first."}]},
             {"type": "input", "block_id": "title", "label": {"type": "plain_text", "text": "Title"},
              "element": {"type": "plain_text_input", "action_id": "v", "max_length": core.TASK_TITLE_MAX}},
             {"type": "input", "block_id": "body", "optional": True, "label": {"type": "plain_text", "text": "Details"},
@@ -309,14 +309,14 @@ def on_task(ack, body, client, view):
         log.warning("task: %s: %s", repo, problem(e))
         return publish_home(client, user, notice=f"Could not send “{core.clip(title, 80)}” to {repo} ({problem(e)}). "
                                                  "Try again in a bit.")
-    publish_home(client, user, notice=f"Sent “{core.clip(title, 80)}” to {repo}: it becomes an issue in a minute "
-                                      "and goes to refinement.")
+    publish_home(client, user, notice=f"Sent “{core.clip(title, 80)}” to {repo}: it becomes a task in a minute "
+                                      "and is planned first.")
 
 
 # --- settings: ask in a DM or from the Home tab, apply with a click -------------------------------------------------
 
 PLACEHOLDER = "⏳ Looking that up…"
-NOT_LINKED = "Your Slack account is not linked to a GitHub login. Ask the owner to add you."
+NOT_LINKED = core.NOT_LINKED
 
 
 def known(user):
@@ -626,8 +626,8 @@ def on_setting_feature(ack, body, client):
     if refusal:
         return edit(client, ch, ts, refusal)
     gh("POST", f"/repos/{repo}/dispatches", token,
-       core.task(repo, title, "Asked the settings bot in Slack; the kit has no setting for it yet.", login)[1])
-    edit(client, ch, ts, f"Filed “{core.clip(title, 80)}” as a feature request in {repo}: it becomes an issue in a minute.")
+       core.task(repo, title, "Asked the settings bot in Slack; agentkit has no setting for it yet.", login)[1])
+    edit(client, ch, ts, f"Filed “{core.clip(title, 80)}” as a feature request in {repo}: it becomes a task in a minute.")
 
 
 # --- nudges ---------------------------------------------------------------------------------------------------------

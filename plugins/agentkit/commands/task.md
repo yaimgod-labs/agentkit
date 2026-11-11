@@ -1,9 +1,29 @@
 ---
-description: Add work: refine it with you in chat, then file the issue already refined
-argument-hint: <what you want>
+description: Add work (a task, a question to research, or a design to decide): refine it with you in chat, then file it
+argument-hint: <what you want | a question | a problem to design for>
 ---
 
 Refining happens here, in this chat. `REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)` and `T=$(mktemp -d)`. `$ARGUMENTS` is the request. If it is empty, ask what they want and stop until they say.
+
+## 0. A question or a design, not a build
+
+Decide first what the request is. Ask the user only if it is unclear.
+
+- **A question to answer** ("what is true?", "what are the options?"): file it as research and stop here. Body: `## Question` (the question and the decision it feeds) and `## Acceptance criteria` (what the answer must cover, as `- [ ]` lines).
+- **A design to decide** ("how should we build it?"): first use the `find-knowledge` skill for related docs, decisions and RFCs, and mention them. Then file it as an RFC and stop here. Body: `## Problem`, `## Constraints` (if any), `## Acceptance criteria` (`- [ ]` lines; at least: the RFC compares two or more options and recommends one). Title `RFC: <short problem>`.
+- **Anything else**: go on to step 1.
+
+Either one is filed with the body through a file (step 3 says why), and is refined in CI:
+
+```
+cat >"$T/body.md" <<'EOF'
+<the body>
+EOF
+gh issue create --repo "$REPO" --title "<short title>" --body-file "$T/body.md" \
+  --label type:<research|rfc> --label status:refining
+```
+
+Reply with the issue URL. For an RFC, say that its PR is decided with a `/decide accept <why>` or `/decide reject <why>` comment.
 
 ## 1. Refine in chat
 
@@ -44,7 +64,7 @@ gh issue create --repo "$REPO" --title "<short title>" --body-file "$T/body.md" 
   --label size:<size> --label type:<type> --label mode:<mode>
 ```
 
-No `status:*` label yet: an issue labelled `status:ready` before its blockers are linked could be started in the gap. Every body this command files ends with the `<!-- agentkit:filed-by-task -->` line: in the Claude Code + Slack mode a new issue without a status refines on its own, and that line tells the kit this one is refined already and gets its status from this command (step 6). Keep the issue number (`<n>`) from the URL `gh` prints.
+No `status:*` label yet: an issue labelled `status:ready` before its blockers are linked could be started in the gap. Every body this command files ends with the `<!-- agentkit:filed-by-task -->` line: in the Slack mode a new issue without a status refines on its own, and that line tells the kit this one is refined already and gets its status from this command (step 6). Keep the issue number (`<n>`) from the URL `gh` prints.
 
 ## 4. Dependencies
 
@@ -54,7 +74,7 @@ For each number `<b>` in `blocked_by`:
 
 ## 5. Research
 
-Only if step 1 found a research question. File it in the `/research` format, body through a file as in step 3:
+Only if step 1 found a research question. File it in step 0's research format, body through a file as in step 3:
 
 ```
 cat >"$T/research.md" <<'EOF'
@@ -71,7 +91,7 @@ gh issue create --repo "$REPO" --title "<short question>" --body-file "$T/resear
   --label type:research --label status:refining
 ```
 
-`<n>` in the `research-for` line is the issue from step 3: it tells the kit which issue the research answers (in the Claude Code + Slack mode, approving the research passes its recommendation there; overriding it unlinks it from there). The `filed-by-task` line stays last. Then link it as a blocker of `<n>`, as in step 4 (`<b>` = the research issue). The research issue goes through CI refine like any `/research` question; `<n>` waits for its answer.
+`<n>` in the `research-for` line is the issue from step 3: it tells the kit which issue the research answers (in the Slack mode, approving the research passes its recommendation there; overriding it unlinks it from there). The `filed-by-task` line stays last. Then link it as a blocker of `<n>`, as in step 4 (`<b>` = the research issue). The research issue goes through CI refine like any research question; `<n>` waits for its answer.
 
 ## 6. Set the status
 
@@ -81,7 +101,7 @@ One edit: `gh issue edit <n> --repo "$REPO" --add-label status:<status>`, with t
 
 If the size is `m` or `l`, propose the split in chat: the sub-tasks as titles, each with one line, and their order. Ask whether to go ahead.
 
-- On the user's OK: use `agentkit:plan-feature` with `<n>` as the epic, and give it the sub-issue status. In the Claude Code + Slack mode (`gh variable get AGENTKIT_INTERFACE --repo "$REPO"` prints `claude-slack`) that is `status:refining`: each sub-issue then refines on its own in CI. Outside the mode it is `status:backlog`, as today. Never `status:ready`. Then remove the status, since epics never carry one: `gh issue edit <n> --repo "$REPO" --remove-label status:backlog`.
+- On the user's OK: use `agentkit:plan-feature` with `<n>` as the epic, and give it the sub-issue status. In the Slack mode (`gh variable get AGENTKIT_INTERFACE --repo "$REPO"` prints `slack`, or `claude-slack` on a project not upgraded yet) that is `status:refining`: each sub-issue then refines on its own in CI. Outside the mode it is `status:backlog`, as today. Never `status:ready`. Then remove the status, since epics never carry one: `gh issue edit <n> --repo "$REPO" --remove-label status:backlog`.
 - Without an OK: leave `<n>` at `status:backlog`, and say so.
 
 ## 8. Reply

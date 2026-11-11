@@ -1,7 +1,7 @@
-# Claude Code + Slack mode: a person answers a waiting issue (action:required or status:blocked) with the Comment
+# Slack mode: a person answers a waiting issue (action:required or status:blocked) with the Comment
 # button on its Slack card, and Slack's GitHub app posts that answer as an issue comment by the person's account.
 # This workflow maps the comment to one action (scripts/reply.py) and carries it out (scripts/apply-reply.sh).
-# The caller runs it only when AGENTKIT_INTERFACE is claude-slack or slack-bot.
+# The caller runs it only when AGENTKIT_INTERFACE is slack.
 # In slack-bot mode the reply arrives as a repository_dispatch event `agentkit-slack-reply` from the kit's Slack bot
 # (client_payload: {issue, text, login}); `login` is the GitHub login the bot mapped the Slack user to. It is checked
 # for write access here again, and the workflow writes the signed record of the reply (slackrec.py).
@@ -51,7 +51,7 @@ jobs:
     env:
       REPO: ${{ github.repository }}
       N: ${{ github.event.issue.number || github.event.client_payload.issue }}
-      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
+      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE == 'claude-slack' && 'slack' || vars.AGENTKIT_INTERFACE }}  # claude-slack: the value's older name
     steps:
       - id: app
         uses: actions/create-github-app-token@v3
@@ -164,7 +164,7 @@ jobs:
             for l in $old; do args+=(--remove-label "$l"); done
             gh issue edit "$N" --repo "$REPO" ${args[@]+"${args[@]}"} --add-label status:needs-human --add-label reason:agent-error --add-label action:required
           fi
-          printf '%s\n' "agentkit: could not apply your reply ($RUN). Needs a human." "" \
+          printf '%s\n' "agentkit: could not apply your reply ($RUN). Needs you." "" \
             "Answer with the Comment button on this issue's card in Slack." | gh issue comment "$N" --repo "$REPO" --body-file -
 
   # the Slack bot's `+ Add task`: a new issue, filed for a person with write access

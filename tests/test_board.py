@@ -130,7 +130,7 @@ expect("waiting on you statuses", sorted(nums("Waiting on you")) == [20, 21, 22,
 expect("in progress statuses", sorted(nums("In progress")) == [30, 31, 32, 33, 34], md)
 expect("blocked lists reasons", nums("Blocked") == [40] and any("waiting on legal" in l for l in sec["Blocked"])
        and any("needs a key" in l for l in sec["Blocked"]), md)
-expect("line has stage and estimate", any(l.startswith("- #13 task 13 — Ready — ~2h–4h") for l in sec["Up next"]), md)
+expect("line has stage and estimate", any(l.startswith("- #13 task 13 — ~2h–4h") for l in sec["Up next"]), md)
 
 # an empty board still renders every section
 md = run("render", stdin={"issues": [], "deps": {}, "estimates": {}})
@@ -159,7 +159,7 @@ board = {"issues": [issue(n, "status:ready") for n in (1, 2, 3, 4, 5, 6, 7)] + [
 md = run("render", stdin=board)
 up = sections(md)["Up next"]
 expect("up next skips the held issue", [l for l in up if l.startswith("- #")][:5] == [
-    "- #2 task 2 — Ready — holds up #3", "- #3 task 3 — Ready", "- #4 task 4 — Ready", "- #5 task 5 — Ready", "- #6 task 6 — Ready"], md)
+    "- #2 task 2 — holds up #3", "- #3 task 3", "- #4 task 4", "- #5 task 5", "- #6 task 6"], md)
 expect("held issue listed with its blockers", "- Held: #1 task 1 — waiting on #40, #41" in up, md)
 expect("not taken: size m and l, split first", "- Not taken: #8 task 8 — split first (size:m)" in up
        and "- Not taken: #9 task 9 — split first (size:l)" in up, md)
@@ -168,7 +168,7 @@ expect("mode:human is under Waiting on you, not Not taken", "#10" not in "\n".jo
 # test_render_holds_up
 board = {"issues": [issue(4, "status:in-progress")], "deps": {"4": {"waiting_on": [], "holds_up": [7, 9]}}, "estimates": {}}
 md = run("render", stdin=board)
-expect("holds up its dependents", "- #4 task 4 — In progress — holds up #7, #9" in md, md)
+expect("holds up its dependents", "- #4 task 4 — Being built — holds up #7, #9" in md, md)
 
 # render warnings go first, one line each
 md = run("render", stdin={"issues": [], "deps": {}, "estimates": {}, "warnings": ["could not read ranks"]})

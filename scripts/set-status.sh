@@ -3,13 +3,13 @@
 # Leaves exactly one status:* label on the issue (or none when no status is given),
 # and at most one reason:* label (the given one; any old reason is dropped).
 # Every other status:*/reason:* label is removed in the same edit that adds the new ones.
-# With AGENTKIT_INTERFACE=claude-slack the same edit also keeps action:required in step with the status:
+# With AGENTKIT_INTERFACE=slack the same edit also keeps action:required in step with the status:
 # present for a waiting status (needs-info, needs-human, needs-verification, needs-approval, and ready on a mode:human
 # issue), absent otherwise. Without it, action:required is never touched.
 set -euo pipefail
 repo=$1 n=$2 status=${3:-} reason=${4:-}
 slack=0 want_wait=0 has_wait=0 human=0
-[ "${AGENTKIT_INTERFACE:-}" != claude-slack ] || slack=1
+[ "${AGENTKIT_INTERFACE:-}" != slack ] || slack=1
 filter='.labels[].name | select(startswith("status:") or startswith("reason:"))'
 [ "$slack" -eq 0 ] || filter='.labels[].name | select(startswith("status:") or startswith("reason:") or . == "action:required" or . == "mode:human")'
 # capture first so a failed read stops the script before the edit (fail closed)

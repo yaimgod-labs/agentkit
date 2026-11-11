@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Maps a person's reply on a waiting issue to the action a workflow applies (Claude Code + Slack mode).
+"""Maps a person's reply on a waiting issue to the action a workflow applies (Slack mode).
 Python 3.9+, stdlib only.
 
   reply.py
@@ -15,7 +15,7 @@ The reply is matched case-insensitively, after strip(), on its first word with t
 keyword valid for the issue's status gives that status's action; `arg` is the rest of the text after the keyword.
 Any other text is free text: the status's free-text action, `arg` the whole body. A keyword that is not valid
 for the status gives `hint` with the keyword as `arg`, and so does a keyword that needs an argument and has none
-(research, block, replace, reject, close). `accept` alone is a decision with no reason given. `replace` takes `#42` or `42`; `arg` is the digits. An empty body
+(research, block, replace, reject, close). `accept` alone is a decision with no reason given. `approve` and `accept` mean the same: either works where the other is the keyword. `replace` takes `#42` or `42`; `arg` is the digits. An empty body
 is `hint` with an empty `arg`. A status the table does not list (and `ready` without `mode:human`) gives
 `none`: the workflow does nothing.
 
@@ -41,6 +41,7 @@ TABLE = {
 }
 
 KEYWORDS = {k for keywords, _ in TABLE.values() for k in keywords}
+SAME = {"approve": "accept", "accept": "approve"}  # one yes: either word works where the other is the status's keyword
 
 
 def out(action, arg=""):
@@ -79,6 +80,8 @@ def match(body, keywords, free):
     rest = more[0].strip() if more else ""
     if word not in KEYWORDS:
         return out(free, text)
+    if word not in keywords and SAME.get(word) in keywords:
+        word = SAME[word]
     if word not in keywords or (word in NEEDS_ARG and not rest):
         return out("hint", word)
     if word == "replace":

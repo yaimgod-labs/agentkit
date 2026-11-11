@@ -1,5 +1,5 @@
 name: Feature
-description: A deliverable small enough for one PR (1–2 days)
+description: A deliverable small enough for one PR (at most a day)
 labels: ["type:feature", "status:backlog"]
 body:
   - type: textarea

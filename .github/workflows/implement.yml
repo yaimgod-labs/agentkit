@@ -42,7 +42,7 @@ jobs:
     env:
       REPO: ${{ github.repository }}
       N: ${{ github.event.issue.number }}
-      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
+      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE == 'claude-slack' && 'slack' || vars.AGENTKIT_INTERFACE }}  # claude-slack: the value's older name
     steps:
       - id: write
         if: github.event.label.name == 'status:in-progress'
@@ -102,12 +102,12 @@ jobs:
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # the status first, then the comment: Slack threads a comment under the issue's card only once
-          # action:required is there. In the Claude Code + Slack mode the comment ends with the Comment-button line
+          # action:required is there. In the Slack mode the comment ends with the Comment-button line
           if ! .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error; then
             # the kit may not have loaded if the run failed early: by hand. In the mode also one status, one reason
             # and action:required, so the card and the reply job see the handover
             args=()
-            if [ "$AGENTKIT_INTERFACE" = claude-slack ]; then
+            if [ "$AGENTKIT_INTERFACE" = slack ]; then
               for l in $(gh issue view "$N" --repo "$REPO" --json labels --jq '.labels[].name | select((startswith("status:") and . != "status:needs-human") or (startswith("reason:") and . != "reason:agent-error"))'); do
                 args+=(--remove-label "$l")
               done
@@ -115,8 +115,8 @@ jobs:
             fi
             gh issue edit "$N" --repo "$REPO" ${args[@]+"${args[@]}"} --add-label status:needs-human --add-label reason:agent-error
           fi
-          msg="agentkit: the blocker check before implementing failed ($RUN). Needs a human."
-          [ "$AGENTKIT_INTERFACE" != claude-slack ] || msg+=$'\n\n'"Answer with the Comment button on this issue's card in Slack."
+          msg="agentkit: the blocker check before implementing failed ($RUN). Needs you."
+          [ "$AGENTKIT_INTERFACE" != slack ] || msg+=$'\n\n'"Reply \`retry\`, or say what to change."$'\n'"Answer with the Comment button on this issue's card in Slack."
           printf '%s\n' "$msg" | gh issue comment "$N" --repo "$REPO" --body-file -
 
   implement:
@@ -135,7 +135,7 @@ jobs:
       N: ${{ github.event.issue.number }}
       TITLE: ${{ github.event.issue.title }}
       MODE: ${{ github.event.label.name == 'status:changes-requested' && 'fix' || 'new' }}
-      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE }}
+      AGENTKIT_INTERFACE: ${{ vars.AGENTKIT_INTERFACE == 'claude-slack' && 'slack' || vars.AGENTKIT_INTERFACE }}  # claude-slack: the value's older name
     steps:
       - id: write
         uses: actions/create-github-app-token@v3
@@ -279,7 +279,7 @@ jobs:
             If the mode is "fix", first read .agentkit-feedback/review.md (the PR's comments, reviews, inline review
             comments and the end of each failed job's log) and fix every blocking finding.
             Commit your work. Do not push, do not open a PR, do not change labels.
-            ${{ vars.AGENTKIT_INTERFACE == 'claude-slack' && 'The Claude Code + Slack mode is on: if you cannot meet the acceptance criteria without a person''s answer or new knowledge, use the skill''s stuck exit (a last `STUCK:` line).' || '' }}
+            ${{ contains(fromJSON('["slack","claude-slack"]'), vars.AGENTKIT_INTERFACE) && 'The Slack mode is on: if you cannot meet the acceptance criteria without a person''s answer or new knowledge, use the skill''s stuck exit (a last `STUCK:` line).' || '' }}
           # research issues get the web to check primary sources; their output is a doc PR that the gate and a person approve
           claude_args: >-
             --model ${{ vars.AGENTKIT_IMPLEMENT_MODEL || inputs.model }}
@@ -310,8 +310,8 @@ jobs:
           # the implementer may stop with a last `STUCK: {...}` line (implement-issue step 10); ask.py validates it, and
           # an invalid one counts as absent. A failure of the script itself never changes today's path
           stuck=$(python3 .agentkit-kit/scripts/ask.py stuck <<<"$summary") || stuck=
-          if [ -n "$stuck" ] && [ "$AGENTKIT_INTERFACE" = claude-slack ]; then
-            # Claude Code + Slack mode: ask the person on the issue, or file the research, instead of a PR. Commits made
+          if [ -n "$stuck" ] && [ "$AGENTKIT_INTERFACE" = slack ]; then
+            # Slack mode: ask the person on the issue, or file the research, instead of a PR. Commits made
             # so far stay on the branch, which the next implement run reuses once the answer is in
             kind=$(jq -r .kind <<<"$stuck")
             # research stays one level deep: an issue that is research already asks a person instead
@@ -350,7 +350,7 @@ jobs:
                 | sort -u | tr '\n' ' ') || who=
             fi
             if [ -n "$who" ]; then
-              gh pr comment "$PR" --repo "$REPO" --body "agentkit: ${who}the implementer made no commits for your review and may need more detail. Answer by submitting another \"Request changes\" review with the details.
+              gh pr comment "$PR" --repo "$REPO" --body "agentkit: ${who}the agent made no commits for your review and may need more detail. Answer by submitting another \"Request changes\" review with the details.
 
           ${note}${summary}"
               .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-info
@@ -358,10 +358,10 @@ jobs:
             fi
             # the status first (Slack threads the comment under the card only once action:required is there)
             .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error
-            msg="agentkit: the implementer made no commits. Needs a human.
+            msg="agentkit: the agent made no commits. Needs you.
 
           ${note}${summary}"
-            [ "$AGENTKIT_INTERFACE" != claude-slack ] || msg+=$'\n\n'"Answer with the Comment button on this issue's card in Slack."
+            [ "$AGENTKIT_INTERFACE" != slack ] || msg+=$'\n\n'"Reply \`retry\`, or say what to change."$'\n'"Answer with the Comment button on this issue's card in Slack."
             printf '%s\n' "$msg" | gh issue comment "$N" --repo "$REPO" --body-file -
             exit 0
           fi
@@ -396,12 +396,12 @@ jobs:
             .agentkit-kit/scripts/retry.sh "$REPO" "$N" "$LABEL" "implement run failed ($RUN)" && exit 0
           fi
           # the status first, then the comment: Slack threads a comment under the issue's card only once
-          # action:required is there. In the Claude Code + Slack mode the comment ends with the Comment-button line
+          # action:required is there. In the Slack mode the comment ends with the Comment-button line
           if ! .agentkit-kit/scripts/set-status.sh "$REPO" "$N" status:needs-human reason:agent-error; then
             # the kit may not have loaded if the run failed early: by hand. In the mode also one status, one reason
             # and action:required, so the card and the reply job see the handover
             args=()
-            if [ "$AGENTKIT_INTERFACE" = claude-slack ]; then
+            if [ "$AGENTKIT_INTERFACE" = slack ]; then
               for l in $(gh issue view "$N" --repo "$REPO" --json labels --jq '.labels[].name | select((startswith("status:") and . != "status:needs-human") or (startswith("reason:") and . != "reason:agent-error"))'); do
                 args+=(--remove-label "$l")
               done
@@ -409,6 +409,6 @@ jobs:
             fi
             gh issue edit "$N" --repo "$REPO" ${args[@]+"${args[@]}"} --add-label status:needs-human --add-label reason:agent-error
           fi
-          msg="agentkit: implement run failed or timed out ($RUN). Needs a human."
-          [ "$AGENTKIT_INTERFACE" != claude-slack ] || msg+=$'\n\n'"Answer with the Comment button on this issue's card in Slack."
+          msg="agentkit: implement run failed or timed out ($RUN). Needs you."
+          [ "$AGENTKIT_INTERFACE" != slack ] || msg+=$'\n\n'"Reply \`retry\`, or say what to change."$'\n'"Answer with the Comment button on this issue's card in Slack."
           printf '%s\n' "$msg" | gh issue comment "$N" --repo "$REPO" --body-file -

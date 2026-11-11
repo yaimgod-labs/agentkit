@@ -94,12 +94,12 @@ expect("lint: a free-text modal is not an answer button", card.lint({"blocks": [
     {"text": {"text": x}, "value": "o/r#7|" + y} for x, y in [("A", "a"), ("B", "b"), ("C", "c"), ("Failed…", "")]]}]}) == [])
 
 # Attention: needs-human after a failed run (reason:env, reason:agent-error): one line of why, Retry, Block…, Logs
-failed = ("agentkit: implement run failed or timed out (https://github.com/o/r/actions/runs/123). Needs a human.\n\n"
+failed = ("agentkit: implement run failed or timed out (https://github.com/o/r/actions/runs/123). Needs you.\n\n"
           "Answer with the Comment button on this issue's card in Slack.")
 a = card.build({"repo": "o/r", "number": 7, "title": "t", "labels": ["status:needs-human", "reason:agent-error", "action:required"],
                 "comments": [failed, "<!-- agentkit:card channel=C1 ts=1.2 -->"]})
 ab = a["blocks"][1]["elements"]
-expect("attention: the why without the link", a["blocks"][0]["text"]["text"].split("\n")[1] == "agentkit: implement run failed or timed out. Needs a human.", a["blocks"][0]["text"]["text"])
+expect("attention: the why without the link", a["blocks"][0]["text"]["text"].split("\n")[1] == "agentkit: implement run failed or timed out. Needs you.", a["blocks"][0]["text"]["text"])
 expect("attention: Retry, Block…, Logs; no Other…", [e["text"]["text"] for e in ab] == ["Retry", "Block…", "Logs"], ab)
 expect("attention: Retry replies, Block… opens a modal", (ab[0]["value"], ab[1]["value"], ab[1]["action_id"].split("_")[0]) == ("o/r#7|retry", "o/r#7|block", "modal"), ab)
 expect("attention: Logs links the run and has no value", ab[2].get("url") == "https://github.com/o/r/actions/runs/123" and "value" not in ab[2], ab[2])
@@ -128,7 +128,7 @@ card.slack = lambda method, payload: sent.append((method, payload)) or {"ok": Tr
 res_issue = {"repo": "o/r", "number": 5, "title": "t", "state": "OPEN", "labels": ["status:changes-requested"],
              "comments": ["<!-- agentkit:card channel=C1 ts=1.2 -->", "other", "<!-- agentkit:card channel=C1 ts=3.4 -->x"]}
 expect("resolve edits only exact marker comments", card.resolve(res_issue) == 1 and sent[0][0] == "chat.update" and sent[0][1]["ts"] == "1.2")
-expect("resolved card has no buttons and says the new status", len(sent[0][1]["blocks"]) == 1 and "now changes-requested" in sent[0][1]["text"])
+expect("resolved card has no buttons and says the new status", len(sent[0][1]["blocks"]) == 1 and "No longer waiting: in review" in sent[0][1]["text"])
 expect("closed as completed reads Closed as done", card.outcome({"state": "CLOSED", "stateReason": "COMPLETED"}) == "Closed as done")
 card.slack = real_slack
 
@@ -202,7 +202,7 @@ v = core.home_view([board], cards)
 t = texts(v)
 expect("home: a home view", v["type"] == "home")
 expect("home: the four sections in order", [s.split("*")[1] for s in t if s.startswith("*") and "(" in s] ==
-       ["Waiting on you", "In progress", "Next up", "Done this week"], t)
+       ["Waiting on you", "In progress", "Up next", "Done this week"], t)
 acts = [b for b in v["blocks"] if b["type"] == "actions"]
 expect("home: a waiting item has its card's buttons", len(acts) == 1 and acts[0]["elements"][0]["value"].startswith("o/r#3|"), acts)
 expect("home: in progress names the stage", any("#5>" in s and "review" in s for s in t), t)

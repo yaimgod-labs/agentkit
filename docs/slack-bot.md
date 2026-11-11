@@ -94,7 +94,7 @@ gh agentkit upgrade owner/repo --interface slack-bot --card-channel C0123456789 
 gh secret set SLACK_BOT_TOKEN --repo owner/repo        # the same xoxb- token the bot uses (input hidden)
 ```
 
-`--interface slack-bot` is the Claude Code + Slack mode (`AGENTKIT_INTERFACE=claude-slack`, `AUTO_MERGE=true`) plus
+`--interface slack-bot` is the Slack mode (`AGENTKIT_INTERFACE=slack`, `AUTO_MERGE=true`) plus
 `AGENTKIT_SLACK_BOT=true` and `AGENTKIT_CARD_CHANNEL`. The channel id is at the bottom of the channel's details (`C…`, or
 `G…` for an old private channel); without `--card-channel` the value already set is kept, or you are asked for it. The
 CLI never reads the token: it prints the `gh secret set` line for you to run. Merge the upgrade PR, so the caller has the
@@ -144,7 +144,7 @@ comment, so retry, guidance and RFC accept/reject work from Slack. A bot comment
 
 **The board.** The bot's Home tab shows, per repo in `AGENTKIT_REPOS` where the person's mapped login has write access
 now: **Waiting on you** (open `action:required` issues, oldest first, each as its card with the same buttons),
-**In progress** (`status:in-progress`, `status:review`), **Next up** (`status:ready` in the dispatcher's order from
+**In progress** (`status:in-progress`, `status:review`), **Up next** (`status:ready` in the dispatcher's order from
 `board.py`, without the Projects `Rank` and the debt quota; the ones the dispatcher never takes come last, saying why)
 and **Done this week** (closed as completed in the last 7 days). Sections are capped to fit Slack's 100 blocks, with an
 "and N more" link to the GitHub search. A Slack user who is not in `users.json` sees one line with their member ID to

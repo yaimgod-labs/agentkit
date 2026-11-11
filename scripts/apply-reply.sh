@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: apply-reply.sh <owner/repo> <issue> <action> <arg> <login>
-# Carries out one Slack reply (Claude Code + Slack mode): <action> and <arg> come from reply.py, <login> is the person
+# Carries out one Slack reply (Slack mode): <action> and <arg> come from reply.py, <login> is the person
 # who answered, or the kit's bot (<app-slug>[bot]) when an agent starts research itself. Env COMMENT_ID, the id of the
 # person's issue comment this reply is, for `retry`/`guide` with the agent PR (the reset-rounds marker names it, and the
 # review gate counts a reset only for a write-access person's comment, once). Env KEYWORDS

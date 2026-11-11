@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""How an agent asks the person (Claude Code + Slack mode): the implementer's STUCK line, refine's research key, and
+"""How an agent asks the person (Slack mode): the implementer's STUCK line, refine's research key, and
 the stuck message the kit posts. Python 3.9+, stdlib only. Agent text is untrusted: it is validated here and escaped
 before it reaches a comment.
 

@@ -68,16 +68,16 @@ ok "first time: no hand over" nolog "status:needs-human"
 
 FAKE_LABELS="status:in-progress reason:retry" retry
 ok "already retried: hands over" logs "issue edit 7 --repo o/r --remove-label status:in-progress --remove-label reason:retry --add-label status:needs-human --add-label reason:agent-error"
-ok "already retried: says so" logs "agentkit: run died. Needs a human."
+ok "already retried: says so" logs "agentkit: run died. Needs you."
 ok "already retried: no second retry" nolog "Retrying once"
 at() { grep -m1 -n -- "$1" "$FAKE_LOG" | cut -d: -f1; }
-ok "already retried: status before the comment" [ "$(at "add-label status:needs-human")" -lt "$(at "Needs a human")" ]
+ok "already retried: status before the comment" [ "$(at "add-label status:needs-human")" -lt "$(at "Needs you")" ]
 ok "already retried, mode off: no Comment-button line" nolog "Comment button"
-FAKE_LABELS="status:in-progress reason:retry" AGENTKIT_INTERFACE=claude-slack retry
+FAKE_LABELS="status:in-progress reason:retry" AGENTKIT_INTERFACE=slack retry
 ok "already retried, Slack mode: the comment ends with the Comment-button line" \
   [ "$(tail -n 1 "$FAKE_LOG")" = "Answer with the Comment button on this issue's card in Slack." ]
 
 FAKE_LABELS="status:in-progress" FAKE_EDIT_FAIL=1 retry || true
-ok "re-add fails: tries to hand over" logs "agentkit: run died. Needs a human."
+ok "re-add fails: tries to hand over" logs "agentkit: run died. Needs you."
 ok "re-add fails: exits non-zero" [ "$(FAKE_LABELS="status:in-progress" FAKE_EDIT_FAIL=1 retry >/dev/null 2>&1 && echo 0 || echo 1)" = 1 ]
 exit $fail

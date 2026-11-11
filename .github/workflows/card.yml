@@ -1,4 +1,4 @@
-# Slack bot mode (repo var AGENTKIT_SLACK_BOT=true, on top of AGENTKIT_INTERFACE=claude-slack): an issue that starts
+# Slack bot mode (repo var AGENTKIT_SLACK_BOT=true, on top of AGENTKIT_INTERFACE=slack): an issue that starts
 # waiting on a person (label action:required added) gets one short card in the bot's channel (scripts/card.py), and a
 # hidden marker comment that names the card. When the issue stops waiting (a new status without action:required) or
 # closes, every card it has is edited to the outcome, without buttons, so an old card cannot act on a new state.

@@ -75,7 +75,8 @@ expect("keyword wrong status", act("verified", *NI) == ("hint", "verified"), act
 for labels in (NV, NA_R, NA_F, NA_S, BL, RH):
     expect(f"close is only for needs-info and needs-human: {labels}", act("close why", *labels) == ("hint", "close"), act("close why", *labels))
 expect("block is not valid on blocked", act("block why", *BL) == ("hint", "block"))
-expect("approve on rfc is a hint", act("approve", *NA_F) == ("hint", "approve"))
+expect("approve on rfc means accept", act("approve", *NA_F) == ("decide", "accept") and act("approve fits", *NA_F) == ("decide", "accept fits"))
+expect("accept on research means approve", act("accept", *NA_R)[0] == "approve-research", act("accept", *NA_R))
 
 # test_research_arg
 expect("research arg", act("research how CoreBluetooth reconnects", *NI) == ("research", "how CoreBluetooth reconnects"))

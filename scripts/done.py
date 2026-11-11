@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The Slack "task done" text for a merged agent PR (Claude Code + Slack mode). Python 3.9+, stdlib only.
+"""The Slack "task done" text for a merged agent PR (Slack mode). Python 3.9+, stdlib only.
 
   done.py < {"number": <issue>, "title": <issue title>, "body": <PR body or null>, "url": <PR URL>}
       `Task #<n> done: <title>`, a blank line, the PR body's `## Summary` section (up to the next `## ` heading, at

@@ -71,7 +71,7 @@ This repeats `scripts/set-status.sh`'s rule (exactly one `status:*`, at most one
 
 A dropped dependency's block comment stays on the issue, and that comment is what tells the dispatcher the person has seen it, so the dropped blocker no longer holds the issue.
 
-An issue blocked by a dropped dependency gets no Slack card in the Claude Code + Slack mode (it never waited on a person before, so it has no `action:required`): handle it from here with `unblock <n>`, or `replace <n> <b>` when other work takes the dropped issue's place.
+An issue blocked by a dropped dependency gets no Slack card in the Slack mode (it never waited on a person before, so it has no `action:required`): handle it from here with `unblock <n>`, or `replace <n> <b>` when other work takes the dropped issue's place.
 
 ## `replace <n> <b>`
 
@@ -80,7 +80,7 @@ An issue blocked by a dropped dependency gets no Slack card in the Claude Code +
 1. `gh issue view <n> --json labels --jq '[.labels[].name]'`. If `status:blocked` is not among them, print "#<n> is not blocked (status: <its status:* label, or none>)" and change nothing.
 2. `<b>` must be a number other than `<n>`, and an open issue (not a PR) of this repo: `gh api "repos/$REPO/issues/<b>" --jq 'select(.state == "open" and .pull_request == null and (.repository_url | ascii_downcase | endswith("/repos/" + ("'"$REPO"'" | ascii_downcase)))) | .id'`. Empty output or an error: print "#<b> is not an open issue here" and change nothing.
 3. Link it: `gh api "repos/$REPO/issues/<n>/dependencies/blocked_by" -F issue_id=<that id>`. If that fails, print the error and stop.
-4. ONE edit, as in `unblock` but to ready: `gh issue edit <n>` with `--remove-label <l>` for every `status:*` label present except `status:ready`, every `reason:*` label and `action:required` if present (unless the issue is `mode:human`, which waits on you at ready), plus `--add-label status:ready`. When the issue is `mode:human` and the Claude Code + Slack mode is on (`gh variable get AGENTKIT_INTERFACE` prints `claude-slack`), the same edit also adds `--add-label action:required` (a ready human task waits on you, as `scripts/set-status.sh` labels it). Print "#<n> now waits on #<b>".
+4. ONE edit, as in `unblock` but to ready: `gh issue edit <n>` with `--remove-label <l>` for every `status:*` label present except `status:ready`, every `reason:*` label and `action:required` if present (unless the issue is `mode:human`, which waits on you at ready), plus `--add-label status:ready`. When the issue is `mode:human` and the Slack mode is on (`gh variable get AGENTKIT_INTERFACE` prints `slack`, or `claude-slack` on a project not upgraded yet), the same edit also adds `--add-label action:required` (a ready human task waits on you, as `scripts/set-status.sh` labels it). Print "#<n> now waits on #<b>".
 
 ## `unlink <n> <b>`
 
